@@ -70,12 +70,14 @@ For testing without hardware, it runs a fixed number of iterations in `SIMULATE_
 
 ### WhatsApp Alert Backend And Notification Client
 
-The notification foundation is implemented and tested in simulation mode.
+The notification foundation is implemented, deployed, and tested.
 
 It includes:
 
 - A small backend service with a `POST /alert` endpoint.
 - The backend keeps the permanent Meta WhatsApp API credentials off the physical hub device.
+- The backend is live on Railway at `https://amtech-ai-guard-hub-production.up.railway.app`.
+- A `GET /health` endpoint confirms the backend is alive.
 - A `SIMULATE_WHATSAPP` mode that logs what would be sent instead of calling Meta.
 - A C notification client that sends alerts from the hub code to our backend.
 - A `SIMULATE_NETWORK` mode that prints the alert request instead of making a real HTTP call.
@@ -83,7 +85,9 @@ It includes:
 
 Person-confirmed alarms send an `intrusion` alert. Shutter-sensor alarms send a `shutter` alert.
 
-This has been tested end-to-end in simulation mode. Real WhatsApp delivery still needs Meta Business Manager setup, a verified account, a WhatsApp phone number, a permanent access token, and an approved utility template.
+This has been tested with a real HTTPS round trip from the C client to the live Railway backend. The backend currently returns `simulated:true`, meaning the alert reaches our cloud service successfully but real Meta WhatsApp delivery is still turned off.
+
+Real WhatsApp delivery still needs Meta Business Manager setup, a verified account, a WhatsApp phone number, a permanent access token, and an approved utility template.
 
 ## What Is Not Started Yet
 
@@ -104,7 +108,7 @@ The core local security logic is in good shape:
 - Alarm decisions are implemented.
 - Scheduling is implemented.
 - GPIO input and output are implemented.
-- Notification plumbing is implemented and tested in simulation mode.
+- Notification plumbing is implemented, deployed to Railway, and tested with real HTTPS requests.
 - Simulation tests pass without physical hardware.
 - The Rockchip YOLOv5 demo builds with AMTECH integration.
 
