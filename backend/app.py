@@ -4,8 +4,9 @@ from uuid import uuid4
 
 import requests
 from flask import Flask, jsonify, request
+from sqlalchemy.exc import IntegrityError
 
-from database import Alert, Shop, SessionLocal, init_db
+from database import Alert, Device, Shop, SessionLocal, init_db
 
 
 app = Flask(__name__)
@@ -95,6 +96,30 @@ def parse_alert(payload):
         "shop_id": str(shop_id),
         "event_type": event_type,
         "timestamp": str(timestamp),
+    }
+
+
+def parse_shop_registration(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    shop_name = payload.get("shop_name")
+    owner_phone = payload.get("owner_phone")
+    owner_email = payload.get("owner_email")
+    device_serial = payload.get("device_serial")
+
+    if not shop_name:
+        raise ValueError("shop_name is required")
+    if not owner_phone:
+        raise ValueError("owner_phone is required")
+    if not device_serial:
+        raise ValueError("device_serial is required")
+
+    return {
+        "shop_name": str(shop_name),
+        "owner_phone": str(owner_phone),
+        "owner_email": str(owner_email) if owner_email else None,
+        "device_serial": str(device_serial),
     }
 
 
@@ -191,6 +216,18 @@ def set_shop_armed(shop_id, armed):
         db.close()
 
 
+def shop_to_dict(shop):
+    device = shop.devices[0] if shop.devices else None
+    return {
+        "ok": True,
+        "shop_id": shop.id,
+        "shop_name": shop.shop_name,
+        "owner_phone": shop.owner_phone,
+        "device_serial": device.device_serial if device else None,
+        "armed": bool(shop.armed),
+    }
+
+
 @app.post("/alert")
 def alert():
     try:
@@ -216,6 +253,80 @@ def alert():
         return jsonify({"ok": False, "error": f"whatsapp api call failed: {exc}"}), 502
 
     return jsonify({"ok": True, "alert": alert_to_dict(alert_row), "provider_response": provider_response})
+
+
+@app.post("/shop")
+def create_shop():
+    try:
+        payload = parse_shop_registration(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        existing_device = (
+            db.query(Device)
+            .filter(Device.device_serial == payload["device_serial"])
+            .first()
+        )
+        if existing_device is not None:
+            return jsonify({
+                "ok": False,
+                "error": "device_serial is already registered",
+                "device_serial": payload["device_serial"],
+            }), 409
+
+        shop = Shop(
+            id=str(uuid4()),
+            shop_name=payload["shop_name"],
+            owner_phone=payload["owner_phone"],
+            owner_email=payload["owner_email"],
+            armed=False,
+        )
+        device = Device(
+            id=str(uuid4()),
+            shop=shop,
+            device_serial=payload["device_serial"],
+            status="offline",
+            last_seen_at=None,
+        )
+        db.add(shop)
+        db.add(device)
+        db.commit()
+        db.refresh(shop)
+        db.refresh(device)
+
+        return jsonify({
+            "ok": True,
+            "shop_id": shop.id,
+            "shop_name": shop.shop_name,
+            "device_serial": device.device_serial,
+        }), 201
+    except IntegrityError:
+        db.rollback()
+        return jsonify({
+            "ok": False,
+            "error": "device_serial is already registered",
+            "device_serial": payload["device_serial"],
+        }), 409
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.get("/shop/<shop_id>")
+def get_shop(shop_id):
+    db = SessionLocal()
+    try:
+        shop = db.get(Shop, shop_id)
+        if shop is None:
+            return jsonify({"ok": False, "error": "shop not found", "shop_id": shop_id}), 404
+
+        return jsonify(shop_to_dict(shop))
+    finally:
+        db.close()
 
 
 @app.post("/shop/<shop_id>/arm")
