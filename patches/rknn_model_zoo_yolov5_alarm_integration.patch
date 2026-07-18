@@ -1,5 +1,5 @@
 diff --git a/examples/yolov5/cpp/CMakeLists.txt b/examples/yolov5/cpp/CMakeLists.txt
-index fce90e6..1151688 100644
+index fce90e6..b2d8ea6 100644
 --- a/examples/yolov5/cpp/CMakeLists.txt
 +++ b/examples/yolov5/cpp/CMakeLists.txt
 @@ -24,6 +24,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../../3rdparty/ 3rdparty.out)
@@ -10,16 +10,17 @@ index fce90e6..1151688 100644
  
  file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
  
-@@ -32,6 +33,8 @@ add_executable(${PROJECT_NAME}
+@@ -32,6 +33,9 @@ add_executable(${PROJECT_NAME}
      main.cc
      postprocess.cc
      ${rknpu_yolov5_file}
 +    ${AMTECH_SRC_DIR}/alarm_logic.c
 +    ${AMTECH_SRC_DIR}/gpio_control.c
++    ${AMTECH_SRC_DIR}/notify_client.c
  )
  
  target_link_libraries(${PROJECT_NAME}
-@@ -56,6 +59,7 @@ endif()
+@@ -56,6 +60,7 @@ endif()
  
  target_include_directories(${PROJECT_NAME} PRIVATE
      ${CMAKE_CURRENT_SOURCE_DIR}
@@ -27,7 +28,7 @@ index fce90e6..1151688 100644
      ${LIBRKNNRT_INCLUDES}
  )
  
-@@ -63,4 +67,4 @@ install(TARGETS ${PROJECT_NAME} DESTINATION .)
+@@ -63,4 +68,4 @@ install(TARGETS ${PROJECT_NAME} DESTINATION .)
  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../model/bus.jpg DESTINATION ./model)
  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../model/coco_80_labels_list.txt DESTINATION ./model)
  file(GLOB RKNN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/../model/*.rknn")
@@ -35,30 +36,32 @@ index fce90e6..1151688 100644
 \ No newline at end of file
 +install(FILES ${RKNN_FILES} DESTINATION model)
 diff --git a/examples/yolov5/cpp/main.cc b/examples/yolov5/cpp/main.cc
-index 90acf96..d129d40 100644
+index 90acf96..e818873 100644
 --- a/examples/yolov5/cpp/main.cc
 +++ b/examples/yolov5/cpp/main.cc
-@@ -24,6 +24,9 @@
+@@ -24,6 +24,10 @@
  #include "image_utils.h"
  #include "file_utils.h"
  #include "image_drawing.h"
 +#include "../../../../src/alarm_logic.h"
 +
 +#define AMTECH_ALARM_GPIO_PIN 42
++#define AMTECH_SHOP_ID "amtech-demo-shop"
  
  #if defined(RV1106_1103) 
      #include "dma_alloc.hpp"
-@@ -47,6 +50,9 @@ int main(int argc, char **argv)
+@@ -47,6 +51,10 @@ int main(int argc, char **argv)
      rknn_app_context_t rknn_app_ctx;
      memset(&rknn_app_ctx, 0, sizeof(rknn_app_context_t));
  
 +    alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
++    alarm_logic_set_shop_id(AMTECH_SHOP_ID);
 +    alarm_logic_set_armed(1);
 +
      init_post_process();
  
      ret = init_yolov5_model(model_path, &rknn_app_ctx);
-@@ -92,6 +98,10 @@ int main(int argc, char **argv)
+@@ -92,6 +100,10 @@ int main(int argc, char **argv)
      for (int i = 0; i < od_results.count; i++)
      {
          object_detect_result *det_result = &(od_results.results[i]);
@@ -69,7 +72,7 @@ index 90acf96..d129d40 100644
          printf("%s @ (%d %d %d %d) %.3f\n", coco_cls_to_name(det_result->cls_id),
                 det_result->box.left, det_result->box.top,
                 det_result->box.right, det_result->box.bottom,
-@@ -106,6 +116,7 @@ int main(int argc, char **argv)
+@@ -106,6 +118,7 @@ int main(int argc, char **argv)
          sprintf(text, "%s %.1f%%", coco_cls_to_name(det_result->cls_id), det_result->prop * 100);
          draw_text(&src_image, text, x1, y1 - 20, COLOR_RED, 10);
      }

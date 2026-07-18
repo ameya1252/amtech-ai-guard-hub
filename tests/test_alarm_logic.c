@@ -19,6 +19,7 @@ static void check_int(const char *label, int actual, int expected)
 int main(void)
 {
     alarm_logic_init(42);
+    alarm_logic_set_shop_id("amtech-demo-shop");
     alarm_logic_set_armed(1);
 
     alarm_logic_handle_detection(0, "person", 0.75f);

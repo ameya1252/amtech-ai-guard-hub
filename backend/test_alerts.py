@@ -1,0 +1,28 @@
+from datetime import datetime, timezone
+
+import requests
+
+
+BACKEND_URL = "http://127.0.0.1:8000/alert"
+
+
+def send_alert(shop_id, event_type):
+    payload = {
+        "shop_id": shop_id,
+        "event_type": event_type,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    response = requests.post(BACKEND_URL, json=payload, timeout=5)
+    print(f"POST {payload}")
+    print(f"HTTP {response.status_code}: {response.text}")
+    response.raise_for_status()
+
+
+def main():
+    send_alert("amtech-demo-shop", "test")
+    send_alert("amtech-demo-shop", "intrusion")
+    send_alert("amtech-demo-shop", "shutter")
+
+
+if __name__ == "__main__":
+    main()

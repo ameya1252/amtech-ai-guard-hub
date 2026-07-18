@@ -6,6 +6,7 @@
 
 #define AMTECH_ALARM_GPIO_PIN 42
 #define AMTECH_SHUTTER_GPIO_PIN 27
+#define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 
 static void runtime_iteration(int iteration)
@@ -39,6 +40,7 @@ int main(void)
     int i;
 
     alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
+    alarm_logic_set_shop_id(AMTECH_SHOP_ID);
     alarm_logic_set_armed(0);
     sensor_input_init(AMTECH_SHUTTER_GPIO_PIN);
     schedule_set_armed_window(23, 0, 6, 0);

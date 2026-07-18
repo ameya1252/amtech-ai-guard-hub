@@ -1,6 +1,6 @@
 # AMTECH rknn_model_zoo Patches
 
-These patches modify Rockchip's `rknn_model_zoo` YOLOv5 C++ example to wire in AMTECH's `alarm_logic.c` and `gpio_control.c`.
+These patches modify Rockchip's `rknn_model_zoo` YOLOv5 C++ example to wire in AMTECH's `alarm_logic.c`, `gpio_control.c`, and `notify_client.c`.
 
 Apply after cloning `rknn_model_zoo` fresh:
 

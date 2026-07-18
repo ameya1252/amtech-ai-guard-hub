@@ -1,6 +1,7 @@
 #include "alarm_logic.h"
 
 #include "gpio_control.h"
+#include "notify_client.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -8,12 +9,15 @@
 #define PERSON_CLASS_ID 0
 #define PERSON_CONFIDENCE_THRESHOLD 0.6f
 #define REQUIRED_CONSECUTIVE_FRAMES 3
+#define SHOP_ID_MAX_SIZE 64
 
 static int alarm_gpio_pin = -1;
 static int armed = 0;
 static int consecutive_person_frames = 0;
 static int person_seen_this_frame = 0;
 static int alarm_triggered = 0;
+static char alarm_shop_id[SHOP_ID_MAX_SIZE] = "amtech-demo-shop";
+static const char *pending_alarm_event_type = "intrusion";
 
 void alarm_logic_init(int gpio_pin)
 {
@@ -36,6 +40,18 @@ void alarm_logic_init(int gpio_pin)
     }
 
     gpio_write_value(alarm_gpio_pin, 0);
+}
+
+void alarm_logic_set_shop_id(const char *shop_id)
+{
+    if (shop_id == NULL || shop_id[0] == '\0')
+    {
+        printf("Alarm: ignoring empty shop_id\n");
+        return;
+    }
+
+    snprintf(alarm_shop_id, sizeof(alarm_shop_id), "%s", shop_id);
+    printf("Alarm: shop_id set to %s\n", alarm_shop_id);
 }
 
 void alarm_logic_set_armed(int next_armed)
@@ -76,6 +92,8 @@ void trigger_alarm(void)
     {
         gpio_write_value(alarm_gpio_pin, 1);
     }
+
+    notify_send_alert(alarm_shop_id, pending_alarm_event_type);
 }
 
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence)
@@ -121,6 +139,7 @@ void alarm_logic_handle_shutter_sensor(int triggered)
         return;
     }
 
+    pending_alarm_event_type = "shutter";
     trigger_alarm();
 }
 
@@ -146,6 +165,7 @@ void alarm_logic_end_frame(void)
 
     if (consecutive_person_frames >= REQUIRED_CONSECUTIVE_FRAMES)
     {
+        pending_alarm_event_type = "intrusion";
         trigger_alarm();
     }
 

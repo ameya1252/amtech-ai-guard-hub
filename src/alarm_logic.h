@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 void alarm_logic_init(int gpio_pin);
+void alarm_logic_set_shop_id(const char *shop_id);
 void alarm_logic_set_armed(int armed);
 void alarm_logic_toggle_armed(void);
 int alarm_logic_is_armed(void);
