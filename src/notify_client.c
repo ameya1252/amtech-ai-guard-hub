@@ -9,12 +9,14 @@
 #include <curl/curl.h>
 #endif
 
-#define DEFAULT_BACKEND_URL "http://127.0.0.1:8000/alert"
+#ifndef NOTIFY_BACKEND_URL
+#define NOTIFY_BACKEND_URL "http://127.0.0.1:8000/alert"
+#endif
 
 static const char *backend_url(void)
 {
     const char *url = getenv("AMTECH_BACKEND_ALERT_URL");
-    return (url != NULL && url[0] != '\0') ? url : DEFAULT_BACKEND_URL;
+    return (url != NULL && url[0] != '\0') ? url : NOTIFY_BACKEND_URL;
 }
 
 static void current_timestamp(char *buffer, size_t buffer_size)
@@ -82,6 +84,7 @@ int notify_send_alert(const char *shop_id, const char *event_type)
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     result = curl_easy_perform(curl);
     if (result != CURLE_OK)

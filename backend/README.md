@@ -26,6 +26,24 @@ cd backend
 SIMULATE_WHATSAPP=1 python3 app.py
 ```
 
+The app binds to `0.0.0.0` and reads the runtime port from `PORT`, which is what Railway provides:
+
+```sh
+PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
+```
+
+Railway can start it with the included `Procfile`:
+
+```text
+web: gunicorn app:app --bind 0.0.0.0:$PORT
+```
+
+Health check:
+
+```sh
+curl http://127.0.0.1:8000/health
+```
+
 In this mode it prints:
 
 ```text

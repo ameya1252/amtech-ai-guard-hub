@@ -109,5 +109,11 @@ def alert():
     return jsonify({"ok": True, "alert": alert_payload, "provider_response": provider_response})
 
 
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
 if __name__ == "__main__":
-    app.run(host=os.getenv("BACKEND_HOST", "127.0.0.1"), port=int(os.getenv("BACKEND_PORT", "8000")))
+    port = int(os.environ.get("PORT", "8000"))
+    app.run(host="0.0.0.0", port=port)

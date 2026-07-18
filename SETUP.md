@@ -34,7 +34,7 @@ Run in simulated mode:
 
 ```sh
 cd backend
-SIMULATE_WHATSAPP=1 python3 app.py
+PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
 ```
 
 Test alerts:
@@ -43,4 +43,35 @@ Test alerts:
 python3 test_alerts.py
 ```
 
+Railway deployment is prepared with:
+
+```text
+backend/Procfile
+backend/requirements.txt
+```
+
+The backend binds to `0.0.0.0` and reads Railway's dynamic port from `PORT`.
+
 Real WhatsApp Cloud API mode will require Meta credentials and an approved utility template.
+
+## Notification Client URL
+
+The C notification client defaults to local testing:
+
+```text
+http://127.0.0.1:8000/alert
+```
+
+Override at runtime:
+
+```sh
+export AMTECH_BACKEND_ALERT_URL="https://your-railway-app.up.railway.app/alert"
+```
+
+or at compile time:
+
+```sh
+-DNOTIFY_BACKEND_URL=\"https://your-railway-app.up.railway.app/alert\"
+```
+
+HTTPS is handled by libcurl. No extra SSL code is required as long as the target libcurl build has TLS support, which `libcurl4-openssl-dev` provides in the Docker setup.
