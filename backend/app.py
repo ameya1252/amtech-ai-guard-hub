@@ -112,18 +112,7 @@ def parse_timestamp(value):
 def record_alert(alert_payload):
     db = SessionLocal()
     try:
-        shop = db.get(Shop, alert_payload["shop_id"])
-        if shop is None:
-            print(
-                f"Warning: shop_id {alert_payload['shop_id']} not found; "
-                "creating placeholder shop record",
-                flush=True,
-            )
-            shop = Shop(
-                id=alert_payload["shop_id"],
-                shop_name=f"Unregistered shop {alert_payload['shop_id']}",
-            )
-            db.add(shop)
+        get_or_create_shop(db, alert_payload["shop_id"])
 
         alert_row = Alert(
             id=str(uuid4()),
@@ -143,6 +132,26 @@ def record_alert(alert_payload):
         db.close()
 
 
+def get_or_create_shop(db, shop_id):
+    shop = db.get(Shop, shop_id)
+    if shop is not None:
+        return shop
+
+    print(
+        f"Warning: shop_id {shop_id} not found; creating placeholder shop record",
+        flush=True,
+    )
+    shop = Shop(
+        id=shop_id,
+        shop_name=f"Unregistered shop {shop_id}",
+        armed=False,
+    )
+    db.add(shop)
+    db.commit()
+    db.refresh(shop)
+    return shop
+
+
 def alert_to_dict(alert_row):
     timestamp = alert_row.timestamp
     if timestamp.tzinfo is None:
@@ -155,6 +164,31 @@ def alert_to_dict(alert_row):
         "timestamp": timestamp.isoformat(),
         "whatsapp_sent": alert_row.whatsapp_sent,
     }
+
+
+def shop_status_to_dict(shop):
+    return {
+        "ok": True,
+        "shop_id": shop.id,
+        "armed": bool(shop.armed),
+        "hub_online": True,
+        "battery_level": 100,
+    }
+
+
+def set_shop_armed(shop_id, armed):
+    db = SessionLocal()
+    try:
+        shop = get_or_create_shop(db, shop_id)
+        shop.armed = armed
+        db.commit()
+        db.refresh(shop)
+        return shop_status_to_dict(shop)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @app.post("/alert")
@@ -182,6 +216,31 @@ def alert():
         return jsonify({"ok": False, "error": f"whatsapp api call failed: {exc}"}), 502
 
     return jsonify({"ok": True, "alert": alert_to_dict(alert_row), "provider_response": provider_response})
+
+
+@app.post("/shop/<shop_id>/arm")
+def arm_shop(shop_id):
+    return jsonify(set_shop_armed(shop_id, True))
+
+
+@app.post("/shop/<shop_id>/disarm")
+def disarm_shop(shop_id):
+    return jsonify(set_shop_armed(shop_id, False))
+
+
+@app.get("/shop/<shop_id>/status")
+def shop_status(shop_id):
+    db = SessionLocal()
+    try:
+        shop = get_or_create_shop(db, shop_id)
+        db.commit()
+        db.refresh(shop)
+        return jsonify(shop_status_to_dict(shop))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @app.get("/alerts/<shop_id>")

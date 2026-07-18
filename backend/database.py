@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, create_engine
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
@@ -16,6 +16,7 @@ class Shop(Base):
     owner_phone = Column(String(64), nullable=True)
     owner_email = Column(String(255), nullable=True)
     auth_id = Column(String(255), nullable=True, index=True)
+    armed = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     devices = relationship("Device", back_populates="shop")
@@ -69,6 +70,18 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    run_migrations()
+
+
+def run_migrations():
+    inspector = inspect(engine)
+    shop_columns = {column["name"] for column in inspector.get_columns("shops")}
+    if "armed" in shop_columns:
+        return
+
+    default_value = "0" if _database_url.startswith("sqlite:") else "false"
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE shops ADD COLUMN armed BOOLEAN NOT NULL DEFAULT {default_value}"))
 
 
 def db_session():
