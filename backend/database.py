@@ -8,10 +8,23 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 Base = declarative_base()
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String(128), primary_key=True)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    phone_number = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    shops = relationship("Shop", back_populates="user")
+
+
 class Shop(Base):
     __tablename__ = "shops"
 
     id = Column(String(128), primary_key=True)
+    user_id = Column(String(128), ForeignKey("users.id"), nullable=True, index=True)
     shop_name = Column(String(255), nullable=False)
     owner_phone = Column(String(64), nullable=True)
     owner_email = Column(String(255), nullable=True)
@@ -19,6 +32,7 @@ class Shop(Base):
     armed = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
+    user = relationship("User", back_populates="shops")
     devices = relationship("Device", back_populates="shop")
     alerts = relationship("Alert", back_populates="shop")
 
@@ -76,12 +90,13 @@ def init_db():
 def run_migrations():
     inspector = inspect(engine)
     shop_columns = {column["name"] for column in inspector.get_columns("shops")}
-    if "armed" in shop_columns:
-        return
-
-    default_value = "0" if _database_url.startswith("sqlite:") else "false"
     with engine.begin() as connection:
-        connection.execute(text(f"ALTER TABLE shops ADD COLUMN armed BOOLEAN NOT NULL DEFAULT {default_value}"))
+        if "armed" not in shop_columns:
+            default_value = "0" if _database_url.startswith("sqlite:") else "false"
+            connection.execute(text(f"ALTER TABLE shops ADD COLUMN armed BOOLEAN NOT NULL DEFAULT {default_value}"))
+
+        if "user_id" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN user_id VARCHAR(128)"))
 
 
 def db_session():

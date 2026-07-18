@@ -1,15 +1,19 @@
 import os
 from datetime import datetime, timezone
+from functools import wraps
 from uuid import uuid4
 
+import bcrypt
+import jwt
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
-from database import Alert, Device, Shop, SessionLocal, init_db
+from database import Alert, Device, Shop, SessionLocal, User, init_db
 
 
 app = Flask(__name__)
+JWT_SECRET = os.environ["JWT_SECRET"]
 init_db()
 
 
@@ -18,6 +22,61 @@ def env_bool(name, default=False):
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def jwt_secret():
+    return JWT_SECRET
+
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password, password_hash):
+    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+
+
+def create_token(user):
+    payload = {
+        "sub": user.id,
+        "email": user.email,
+        "iat": int(datetime.now(timezone.utc).timestamp()),
+    }
+    return jwt.encode(payload, jwt_secret(), algorithm="HS256")
+
+
+def auth_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return jsonify({"ok": False, "error": "authorization token is required"}), 401
+
+        token = header.removeprefix("Bearer ").strip()
+        try:
+            payload = jwt.decode(token, jwt_secret(), algorithms=["HS256"])
+        except KeyError as exc:
+            return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
+        except jwt.PyJWTError:
+            return jsonify({"ok": False, "error": "invalid authorization token"}), 401
+
+        user_id = payload.get("sub")
+        if not user_id:
+            return jsonify({"ok": False, "error": "invalid authorization token"}), 401
+
+        db = SessionLocal()
+        try:
+            user = db.get(User, user_id)
+            if user is None:
+                return jsonify({"ok": False, "error": "invalid authorization token"}), 401
+            g.user_id = user.id
+            g.user_email = user.email
+        finally:
+            db.close()
+
+        return view(*args, **kwargs)
+
+    return wrapped
 
 
 def build_template_payload(alert):
@@ -123,6 +182,46 @@ def parse_shop_registration(payload):
     }
 
 
+def parse_signup(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    email = payload.get("email")
+    password = payload.get("password")
+    phone_number = payload.get("phone_number")
+
+    if not email:
+        raise ValueError("email is required")
+    if not password:
+        raise ValueError("password is required")
+    if not phone_number:
+        raise ValueError("phone_number is required")
+
+    return {
+        "email": str(email).strip().lower(),
+        "password": str(password),
+        "phone_number": str(phone_number),
+    }
+
+
+def parse_login(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    email = payload.get("email")
+    password = payload.get("password")
+
+    if not email:
+        raise ValueError("email is required")
+    if not password:
+        raise ValueError("password is required")
+
+    return {
+        "email": str(email).strip().lower(),
+        "password": str(password),
+    }
+
+
 def parse_timestamp(value):
     normalized = value
     if normalized.endswith("Z"):
@@ -204,11 +303,14 @@ def shop_status_to_dict(shop):
 def set_shop_armed(shop_id, armed):
     db = SessionLocal()
     try:
-        shop = get_or_create_shop(db, shop_id)
+        shop, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
         shop.armed = armed
         db.commit()
         db.refresh(shop)
-        return shop_status_to_dict(shop)
+        return jsonify(shop_status_to_dict(shop))
     except Exception:
         db.rollback()
         raise
@@ -226,6 +328,84 @@ def shop_to_dict(shop):
         "device_serial": device.device_serial if device else None,
         "armed": bool(shop.armed),
     }
+
+
+def owned_shop_or_response(db, shop_id):
+    shop = db.get(Shop, shop_id)
+    if shop is None:
+        return None, (jsonify({"ok": False, "error": "shop not found", "shop_id": shop_id}), 404)
+
+    if shop.user_id != g.user_id:
+        return None, (jsonify({"ok": False, "error": "you do not have access to this shop", "shop_id": shop_id}), 403)
+
+    return shop, None
+
+
+def shop_summary_to_dict(shop):
+    device = shop.devices[0] if shop.devices else None
+    return {
+        "shop_id": shop.id,
+        "shop_name": shop.shop_name,
+        "owner_phone": shop.owner_phone,
+        "device_serial": device.device_serial if device else None,
+        "armed": bool(shop.armed),
+    }
+
+
+@app.post("/auth/signup")
+def signup():
+    try:
+        payload = parse_signup(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        existing_user = db.query(User).filter(User.email == payload["email"]).first()
+        if existing_user is not None:
+            return jsonify({"ok": False, "error": "email is already registered"}), 409
+
+        user = User(
+            id=str(uuid4()),
+            email=payload["email"],
+            password_hash=hash_password(payload["password"]),
+            phone_number=payload["phone_number"],
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return jsonify({"ok": True, "token": create_token(user), "user_id": user.id, "email": user.email}), 201
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"ok": False, "error": "email is already registered"}), 409
+    except KeyError as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.post("/auth/login")
+def login():
+    try:
+        payload = parse_login(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == payload["email"]).first()
+        if user is None or not verify_password(payload["password"], user.password_hash):
+            return jsonify({"ok": False, "error": "invalid email or password"}), 401
+
+        return jsonify({"ok": True, "token": create_token(user), "user_id": user.id, "email": user.email})
+    except KeyError as exc:
+        return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
+    finally:
+        db.close()
 
 
 @app.post("/alert")
@@ -256,6 +436,7 @@ def alert():
 
 
 @app.post("/shop")
+@auth_required
 def create_shop():
     try:
         payload = parse_shop_registration(request.get_json(silent=True))
@@ -278,6 +459,7 @@ def create_shop():
 
         shop = Shop(
             id=str(uuid4()),
+            user_id=g.user_id,
             shop_name=payload["shop_name"],
             owner_phone=payload["owner_phone"],
             owner_email=payload["owner_email"],
@@ -317,35 +499,56 @@ def create_shop():
 
 
 @app.get("/shop/<shop_id>")
+@auth_required
 def get_shop(shop_id):
     db = SessionLocal()
     try:
-        shop = db.get(Shop, shop_id)
-        if shop is None:
-            return jsonify({"ok": False, "error": "shop not found", "shop_id": shop_id}), 404
+        shop, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
 
         return jsonify(shop_to_dict(shop))
     finally:
         db.close()
 
 
+@app.get("/me/shops")
+@auth_required
+def my_shops():
+    db = SessionLocal()
+    try:
+        shop_rows = (
+            db.query(Shop)
+            .filter(Shop.user_id == g.user_id)
+            .order_by(Shop.created_at.asc())
+            .all()
+        )
+        return jsonify({"ok": True, "shops": [shop_summary_to_dict(shop) for shop in shop_rows]})
+    finally:
+        db.close()
+
+
 @app.post("/shop/<shop_id>/arm")
+@auth_required
 def arm_shop(shop_id):
-    return jsonify(set_shop_armed(shop_id, True))
+    return set_shop_armed(shop_id, True)
 
 
 @app.post("/shop/<shop_id>/disarm")
+@auth_required
 def disarm_shop(shop_id):
-    return jsonify(set_shop_armed(shop_id, False))
+    return set_shop_armed(shop_id, False)
 
 
 @app.get("/shop/<shop_id>/status")
+@auth_required
 def shop_status(shop_id):
     db = SessionLocal()
     try:
-        shop = get_or_create_shop(db, shop_id)
-        db.commit()
-        db.refresh(shop)
+        shop, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
         return jsonify(shop_status_to_dict(shop))
     except Exception:
         db.rollback()
@@ -355,9 +558,14 @@ def shop_status(shop_id):
 
 
 @app.get("/alerts/<shop_id>")
+@auth_required
 def alerts(shop_id):
     db = SessionLocal()
     try:
+        _, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
         alert_rows = (
             db.query(Alert)
             .filter(Alert.shop_id == shop_id)
