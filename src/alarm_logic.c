@@ -57,6 +57,11 @@ int alarm_logic_is_armed(void)
     return armed;
 }
 
+int alarm_logic_is_triggered(void)
+{
+    return alarm_triggered;
+}
+
 void trigger_alarm(void)
 {
     if (alarm_triggered)
@@ -100,6 +105,23 @@ void alarm_logic_handle_detection(int class_id, const char *class_name, float co
     }
 
     person_seen_this_frame = 1;
+}
+
+void alarm_logic_handle_shutter_sensor(int triggered)
+{
+    if (!triggered)
+    {
+        return;
+    }
+
+    printf("Alarm: shutter sensor triggered state=%s\n", armed ? "ARMED" : "DISARMED");
+
+    if (!armed)
+    {
+        return;
+    }
+
+    trigger_alarm();
 }
 
 void alarm_logic_end_frame(void)
