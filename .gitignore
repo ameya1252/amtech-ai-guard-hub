@@ -1,0 +1,8 @@
+luckfox-pico/
+rknn-toolkit2/
+rknn_model_zoo/
+*.rknn
+*.onnx
+build/
+install/
+luckfox_pico_rknn_example/
