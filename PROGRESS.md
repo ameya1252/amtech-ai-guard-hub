@@ -89,11 +89,30 @@ This has been tested with a real HTTPS round trip from the C client to the live 
 
 Real WhatsApp delivery still needs Meta Business Manager setup, a verified account, a WhatsApp phone number, a permanent access token, and an approved utility template.
 
+### Backend Database And Alert History
+
+The backend now has persistent database support for Neon Postgres.
+
+It includes:
+
+- SQLAlchemy database models.
+- `psycopg2-binary` support for Postgres.
+- `DATABASE_URL` loaded from the environment, so the Neon connection string is not stored in code.
+- Automatic table creation on backend startup.
+- A `shops` table for shop records, including placeholder owner account fields for the future mobile app.
+- A `devices` table for tracking hub devices attached to shops.
+- An `alerts` table for storing every alert event.
+- `POST /alert` now records each alert in the database before sending or simulating the WhatsApp message.
+- `GET /alerts/{shop_id}` returns the stored alert history for a shop.
+
+This has been tested locally with SQLite. The same code path is ready for Railway using the Neon `DATABASE_URL` environment variable.
+
+This database is intentionally designed for more than just alert sending. It will also support the future mobile app, where shop owners can see alert history and manage devices.
+
 ## What Is Not Started Yet
 
 These parts are not built yet:
 
-- Cloud connectivity.
 - Mobile app.
 - Connecting the continuous runtime loop to real camera capture.
 - Running the full AI detection pipeline on live camera frames.
@@ -109,7 +128,8 @@ The core local security logic is in good shape:
 - Scheduling is implemented.
 - GPIO input and output are implemented.
 - Notification plumbing is implemented, deployed to Railway, and tested with real HTTPS requests.
+- Backend database persistence is implemented and pushed for Railway deployment with Neon.
 - Simulation tests pass without physical hardware.
 - The Rockchip YOLOv5 demo builds with AMTECH integration.
 
-The next major milestone is testing on the actual Luckfox Pico Ultra board with real GPIO pins, the camera, network access, and the NPU.
+The next major milestones are confirming the live Railway deployment is writing to Neon, then testing on the actual Luckfox Pico Ultra board with real GPIO pins, the camera, network access, and the NPU.
