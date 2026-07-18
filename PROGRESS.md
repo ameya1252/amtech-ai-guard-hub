@@ -68,15 +68,32 @@ It shows how the final Guard Hub program will continuously run:
 
 For testing without hardware, it runs a fixed number of iterations in `SIMULATE_GPIO` mode.
 
+### WhatsApp Alert Backend And Notification Client
+
+The notification foundation is implemented and tested in simulation mode.
+
+It includes:
+
+- A small backend service with a `POST /alert` endpoint.
+- The backend keeps the permanent Meta WhatsApp API credentials off the physical hub device.
+- A `SIMULATE_WHATSAPP` mode that logs what would be sent instead of calling Meta.
+- A C notification client that sends alerts from the hub code to our backend.
+- A `SIMULATE_NETWORK` mode that prints the alert request instead of making a real HTTP call.
+- Alarm triggers now call the notification client automatically.
+
+Person-confirmed alarms send an `intrusion` alert. Shutter-sensor alarms send a `shutter` alert.
+
+This has been tested end-to-end in simulation mode. Real WhatsApp delivery still needs Meta Business Manager setup, a verified account, a WhatsApp phone number, a permanent access token, and an approved utility template.
+
 ## What Is Not Started Yet
 
 These parts are not built yet:
 
-- WhatsApp or notification integration.
 - Cloud connectivity.
 - Mobile app.
 - Connecting the continuous runtime loop to real camera capture.
 - Running the full AI detection pipeline on live camera frames.
+- Real WhatsApp sending with live Meta credentials and an approved production template.
 
 Right now, real image processing only exists in Rockchip's single-image YOLOv5 demo. The continuous `runtime_loop.c` is ready for the camera pipeline to be plugged in later.
 
@@ -87,7 +104,8 @@ The core local security logic is in good shape:
 - Alarm decisions are implemented.
 - Scheduling is implemented.
 - GPIO input and output are implemented.
+- Notification plumbing is implemented and tested in simulation mode.
 - Simulation tests pass without physical hardware.
 - The Rockchip YOLOv5 demo builds with AMTECH integration.
 
-The next major milestone is testing on the actual Luckfox Pico Ultra board with real GPIO pins, the camera, and the NPU.
+The next major milestone is testing on the actual Luckfox Pico Ultra board with real GPIO pins, the camera, network access, and the NPU.
