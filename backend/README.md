@@ -23,7 +23,7 @@ Simulated mode is enabled by default:
 
 ```sh
 cd backend
-SIMULATE_WHATSAPP=1 python3 app.py
+PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
 ```
 
 The app binds to `0.0.0.0` and reads the runtime port from `PORT`, which is what Railway provides:
@@ -44,11 +44,19 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
+Live Railway health check:
+
+```sh
+curl https://amtech-ai-guard-hub-production.up.railway.app/health
+```
+
 In this mode it prints:
 
 ```text
 Would send WhatsApp alert: {shop_id} {event_type} {timestamp}
 ```
+
+The current Railway deployment is still running in simulated WhatsApp mode. It receives real HTTPS alert requests and returns `simulated:true`, but it does not send real Meta WhatsApp messages yet.
 
 Test it from another terminal:
 

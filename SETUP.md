@@ -52,20 +52,32 @@ backend/requirements.txt
 
 The backend binds to `0.0.0.0` and reads Railway's dynamic port from `PORT`.
 
+Live simulated Railway backend:
+
+```text
+https://amtech-ai-guard-hub-production.up.railway.app
+```
+
+Health check:
+
+```sh
+curl https://amtech-ai-guard-hub-production.up.railway.app/health
+```
+
 Real WhatsApp Cloud API mode will require Meta credentials and an approved utility template.
 
 ## Notification Client URL
 
-The C notification client defaults to local testing:
+The C notification client defaults to the live Railway alert endpoint:
 
 ```text
-http://127.0.0.1:8000/alert
+https://amtech-ai-guard-hub-production.up.railway.app/alert
 ```
 
 Override at runtime:
 
 ```sh
-export AMTECH_BACKEND_ALERT_URL="https://your-railway-app.up.railway.app/alert"
+export AMTECH_BACKEND_ALERT_URL="http://127.0.0.1:8000/alert"
 ```
 
 or at compile time:
@@ -75,3 +87,5 @@ or at compile time:
 ```
 
 HTTPS is handled by libcurl. No extra SSL code is required as long as the target libcurl build has TLS support, which `libcurl4-openssl-dev` provides in the Docker setup.
+
+The live Railway backend currently has WhatsApp simulation enabled. It accepts real HTTPS alert requests and returns `simulated:true`, but it does not send real Meta WhatsApp messages yet.

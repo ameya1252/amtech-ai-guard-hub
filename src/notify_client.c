@@ -10,7 +10,17 @@
 #endif
 
 #ifndef NOTIFY_BACKEND_URL
-#define NOTIFY_BACKEND_URL "http://127.0.0.1:8000/alert"
+#define NOTIFY_BACKEND_URL "https://amtech-ai-guard-hub-production.up.railway.app/alert"
+#endif
+
+#define NOTIFY_RESPONSE_MAX_SIZE 4096
+
+#if !defined(SIMULATE_NETWORK)
+typedef struct {
+    char data[NOTIFY_RESPONSE_MAX_SIZE];
+    size_t size;
+    int truncated;
+} notify_response_buffer_t;
 #endif
 
 static const char *backend_url(void)
@@ -44,6 +54,30 @@ static int build_alert_json(char *buffer, size_t buffer_size, const char *shop_i
                     shop_id, event_type, timestamp);
 }
 
+#if !defined(SIMULATE_NETWORK)
+static size_t write_response_body(void *contents, size_t size, size_t nmemb, void *userp)
+{
+    size_t total_size = size * nmemb;
+    notify_response_buffer_t *response = (notify_response_buffer_t *)userp;
+    size_t available = sizeof(response->data) - response->size - 1;
+    size_t copy_size = total_size < available ? total_size : available;
+
+    if (copy_size > 0)
+    {
+        memcpy(response->data + response->size, contents, copy_size);
+        response->size += copy_size;
+        response->data[response->size] = '\0';
+    }
+
+    if (copy_size < total_size)
+    {
+        response->truncated = 1;
+    }
+
+    return total_size;
+}
+#endif
+
 int notify_send_alert(const char *shop_id, const char *event_type)
 {
     char payload[512];
@@ -70,6 +104,9 @@ int notify_send_alert(const char *shop_id, const char *event_type)
     CURLcode result;
     struct curl_slist *headers = NULL;
     long http_code = 0;
+    notify_response_buffer_t response;
+
+    memset(&response, 0, sizeof(response));
 
     curl = curl_easy_init();
     if (curl == NULL)
@@ -85,6 +122,8 @@ int notify_send_alert(const char *shop_id, const char *event_type)
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_response_body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
     result = curl_easy_perform(curl);
     if (result != CURLE_OK)
@@ -98,6 +137,10 @@ int notify_send_alert(const char *shop_id, const char *event_type)
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    printf("Notify: backend response body: %s%s\n",
+           response.data[0] != '\0' ? response.data : "(empty)",
+           response.truncated ? " [truncated]" : "");
 
     if (http_code < 200 || http_code >= 300)
     {

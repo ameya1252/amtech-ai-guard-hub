@@ -8,10 +8,10 @@ int main(void)
 
     if (ret == 0)
     {
-        printf("PASS: notify client simulation behaved as expected\n");
+        printf("PASS: notify client behaved as expected\n");
         return 0;
     }
 
-    printf("FAIL: notify client simulation failed\n");
+    printf("FAIL: notify client failed\n");
     return 1;
 }
