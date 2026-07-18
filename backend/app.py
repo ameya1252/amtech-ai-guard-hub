@@ -1,11 +1,15 @@
 import os
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import requests
 from flask import Flask, jsonify, request
 
+from database import Alert, Shop, SessionLocal, init_db
+
 
 app = Flask(__name__)
+init_db()
 
 
 def env_bool(name, default=False):
@@ -94,11 +98,82 @@ def parse_alert(payload):
     }
 
 
+def parse_timestamp(value):
+    normalized = value
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def record_alert(alert_payload):
+    db = SessionLocal()
+    try:
+        shop = db.get(Shop, alert_payload["shop_id"])
+        if shop is None:
+            print(
+                f"Warning: shop_id {alert_payload['shop_id']} not found; "
+                "creating placeholder shop record",
+                flush=True,
+            )
+            shop = Shop(
+                id=alert_payload["shop_id"],
+                shop_name=f"Unregistered shop {alert_payload['shop_id']}",
+            )
+            db.add(shop)
+
+        alert_row = Alert(
+            id=str(uuid4()),
+            shop_id=alert_payload["shop_id"],
+            event_type=alert_payload["event_type"],
+            timestamp=parse_timestamp(alert_payload["timestamp"]),
+            whatsapp_sent=False,
+        )
+        db.add(alert_row)
+        db.commit()
+        db.refresh(alert_row)
+        return alert_row
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def alert_to_dict(alert_row):
+    timestamp = alert_row.timestamp
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+    return {
+        "id": alert_row.id,
+        "shop_id": alert_row.shop_id,
+        "event_type": alert_row.event_type,
+        "timestamp": timestamp.isoformat(),
+        "whatsapp_sent": alert_row.whatsapp_sent,
+    }
+
+
 @app.post("/alert")
 def alert():
     try:
         alert_payload = parse_alert(request.get_json(silent=True))
+        alert_row = record_alert(alert_payload)
         provider_response = send_whatsapp_alert(alert_payload)
+        whatsapp_sent = not bool(provider_response.get("simulated"))
+        if alert_row.whatsapp_sent != whatsapp_sent:
+            db = SessionLocal()
+            try:
+                stored_alert = db.get(Alert, alert_row.id)
+                stored_alert.whatsapp_sent = whatsapp_sent
+                db.commit()
+                db.refresh(stored_alert)
+                alert_row = stored_alert
+            finally:
+                db.close()
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except KeyError as exc:
@@ -106,7 +181,22 @@ def alert():
     except requests.RequestException as exc:
         return jsonify({"ok": False, "error": f"whatsapp api call failed: {exc}"}), 502
 
-    return jsonify({"ok": True, "alert": alert_payload, "provider_response": provider_response})
+    return jsonify({"ok": True, "alert": alert_to_dict(alert_row), "provider_response": provider_response})
+
+
+@app.get("/alerts/<shop_id>")
+def alerts(shop_id):
+    db = SessionLocal()
+    try:
+        alert_rows = (
+            db.query(Alert)
+            .filter(Alert.shop_id == shop_id)
+            .order_by(Alert.timestamp.desc())
+            .all()
+        )
+        return jsonify({"ok": True, "shop_id": shop_id, "alerts": [alert_to_dict(row) for row in alert_rows]})
+    finally:
+        db.close()
 
 
 @app.get("/health")

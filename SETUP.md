@@ -66,6 +66,28 @@ curl https://amtech-ai-guard-hub-production.up.railway.app/health
 
 Real WhatsApp Cloud API mode will require Meta credentials and an approved utility template.
 
+## Backend Database
+
+The backend reads its database connection from:
+
+```sh
+DATABASE_URL
+```
+
+On Railway, this should point to the Neon Postgres connection string.
+
+The backend creates these initial tables automatically at startup:
+
+- `shops`
+- `devices`
+- `alerts`
+
+For local testing without Neon:
+
+```sh
+DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 SIMULATE_WHATSAPP=1 python3 backend/app.py
+```
+
 ## Notification Client URL
 
 The C notification client defaults to the live Railway alert endpoint:

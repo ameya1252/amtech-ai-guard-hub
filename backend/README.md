@@ -64,6 +64,34 @@ Test it from another terminal:
 python3 test_alerts.py
 ```
 
+## Database
+
+The backend reads its database connection from `DATABASE_URL`.
+
+Railway should provide this from Neon, for example:
+
+```text
+DATABASE_URL=postgresql://...
+```
+
+For local testing without Neon, a temporary SQLite database can be used:
+
+```sh
+DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
+```
+
+On startup, SQLAlchemy creates the initial tables if they do not exist:
+
+- `shops`
+- `devices`
+- `alerts`
+
+Alert history endpoint:
+
+```sh
+curl http://127.0.0.1:8000/alerts/amtech-demo-shop
+```
+
 ## Real Meta WhatsApp Cloud API Mode
 
 Set `SIMULATE_WHATSAPP=0` and provide:
