@@ -7,6 +7,8 @@ import bcrypt
 import jwt
 import requests
 from flask import Flask, g, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from sqlalchemy.exc import IntegrityError
 
 from database import Alert, Device, Shop, SessionLocal, User, init_db
@@ -14,7 +16,18 @@ from database import Alert, Device, Shop, SessionLocal, User, init_db
 
 app = Flask(__name__)
 JWT_SECRET = os.environ["JWT_SECRET"]
+# In-memory limits are fine for the current single-instance Railway pilot.
+# Move to a shared store such as Redis before running multiple backend instances.
+limiter = Limiter(get_remote_address, app=app)
 init_db()
+
+
+@app.errorhandler(429)
+def rate_limit_exceeded(_error):
+    return jsonify({
+        "ok": False,
+        "error": "Too many requests. Please wait a minute and try again.",
+    }), 429
 
 
 def env_bool(name, default=False):
@@ -353,6 +366,7 @@ def shop_summary_to_dict(shop):
 
 
 @app.post("/auth/signup")
+@limiter.limit("3 per minute")
 def signup():
     try:
         payload = parse_signup(request.get_json(silent=True))
@@ -389,6 +403,7 @@ def signup():
 
 
 @app.post("/auth/login")
+@limiter.limit("5 per minute")
 def login():
     try:
         payload = parse_login(request.get_json(silent=True))
