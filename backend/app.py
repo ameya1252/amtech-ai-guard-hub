@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from functools import wraps
 from uuid import uuid4
@@ -10,6 +12,7 @@ import requests
 from flask import Flask, g, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from database import Alert, Device, Shop, SessionLocal, User, init_db
@@ -19,6 +22,7 @@ app = Flask(__name__)
 JWT_SECRET = os.environ["JWT_SECRET"]
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-9585184cf02549f0a6e3e31090670c37.r2.dev")
 UPLOAD_URL_EXPIRES_SECONDS = 900
+DATABASE_KEEPALIVE_INTERVAL_SECONDS = int(os.getenv("DATABASE_KEEPALIVE_INTERVAL_SECONDS", "240"))
 
 
 def rate_limit_key():
@@ -31,7 +35,6 @@ def rate_limit_key():
 # In-memory limits are fine for the current single-instance Railway pilot.
 # Move to a shared store such as Redis before running multiple backend instances.
 limiter = Limiter(rate_limit_key, app=app)
-init_db()
 
 
 @app.errorhandler(429)
@@ -47,6 +50,46 @@ def env_bool(name, default=False):
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def database_keepalive_ping():
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        print("Database keep-alive ping succeeded", flush=True)
+    finally:
+        db.close()
+
+
+def database_keepalive_loop(interval_seconds):
+    while True:
+        time.sleep(interval_seconds)
+        try:
+            database_keepalive_ping()
+        except Exception as exc:
+            print(f"Database keep-alive ping failed: {exc}", flush=True)
+
+
+def start_database_keepalive():
+    if env_bool("DATABASE_KEEPALIVE_DISABLED", default=False):
+        print("Database keep-alive disabled", flush=True)
+        return
+
+    thread = threading.Thread(
+        target=database_keepalive_loop,
+        args=(DATABASE_KEEPALIVE_INTERVAL_SECONDS,),
+        daemon=True,
+        name="database-keepalive",
+    )
+    thread.start()
+    print(
+        f"Database keep-alive scheduled every {DATABASE_KEEPALIVE_INTERVAL_SECONDS} seconds",
+        flush=True,
+    )
+
+
+init_db()
+start_database_keepalive()
 
 
 def jwt_secret():
