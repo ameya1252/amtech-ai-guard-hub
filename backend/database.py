@@ -56,6 +56,7 @@ class Alert(Base):
     shop_id = Column(String(128), ForeignKey("shops.id"), nullable=False, index=True)
     event_type = Column(String(32), nullable=False)
     timestamp = Column(DateTime(timezone=True), nullable=False)
+    media_url = Column(String(2048), nullable=True)
     whatsapp_sent = Column(Boolean, nullable=False, default=False)
 
     shop = relationship("Shop", back_populates="alerts")
@@ -90,6 +91,7 @@ def init_db():
 def run_migrations():
     inspector = inspect(engine)
     shop_columns = {column["name"] for column in inspector.get_columns("shops")}
+    alert_columns = {column["name"] for column in inspector.get_columns("alerts")}
     with engine.begin() as connection:
         if "armed" not in shop_columns:
             default_value = "0" if _database_url.startswith("sqlite:") else "false"
@@ -97,6 +99,9 @@ def run_migrations():
 
         if "user_id" not in shop_columns:
             connection.execute(text("ALTER TABLE shops ADD COLUMN user_id VARCHAR(128)"))
+
+        if "media_url" not in alert_columns:
+            connection.execute(text("ALTER TABLE alerts ADD COLUMN media_url VARCHAR(2048)"))
 
 
 def db_session():

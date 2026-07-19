@@ -4,6 +4,7 @@ from functools import wraps
 from uuid import uuid4
 
 import bcrypt
+import boto3
 import jwt
 import requests
 from flask import Flask, g, jsonify, request
@@ -16,6 +17,8 @@ from database import Alert, Device, Shop, SessionLocal, User, init_db
 
 app = Flask(__name__)
 JWT_SECRET = os.environ["JWT_SECRET"]
+R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-9585184cf02549f0a6e3e31090670c37.r2.dev")
+UPLOAD_URL_EXPIRES_SECONDS = 900
 
 
 def rate_limit_key():
@@ -156,6 +159,45 @@ def send_whatsapp_alert(alert):
     return response.json()
 
 
+def r2_client():
+    account_id = os.environ["R2_ACCOUNT_ID"]
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        region_name="auto",
+    )
+
+
+def extension_for_content_type(content_type):
+    extensions = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "video/mp4": "mp4",
+    }
+    return extensions.get(content_type)
+
+
+def parse_media_upload_request(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    content_type = payload.get("content_type")
+    if not content_type:
+        raise ValueError("content_type is required")
+
+    normalized = str(content_type).strip().lower()
+    extension = extension_for_content_type(normalized)
+    if extension is None:
+        raise ValueError("content_type must be one of image/jpeg, image/png, video/mp4")
+
+    return {
+        "content_type": normalized,
+        "extension": extension,
+    }
+
+
 def parse_alert(payload):
     if not isinstance(payload, dict):
         raise ValueError("request body must be a JSON object")
@@ -163,6 +205,7 @@ def parse_alert(payload):
     shop_id = payload.get("shop_id")
     event_type = payload.get("event_type")
     timestamp = payload.get("timestamp")
+    media_url = payload.get("media_url")
 
     if not shop_id:
         raise ValueError("shop_id is required")
@@ -177,6 +220,7 @@ def parse_alert(payload):
         "shop_id": str(shop_id),
         "event_type": event_type,
         "timestamp": str(timestamp),
+        "media_url": str(media_url) if media_url else None,
     }
 
 
@@ -265,6 +309,7 @@ def record_alert(alert_payload):
             shop_id=alert_payload["shop_id"],
             event_type=alert_payload["event_type"],
             timestamp=parse_timestamp(alert_payload["timestamp"]),
+            media_url=alert_payload["media_url"],
             whatsapp_sent=False,
         )
         db.add(alert_row)
@@ -308,6 +353,7 @@ def alert_to_dict(alert_row):
         "shop_id": alert_row.shop_id,
         "event_type": alert_row.event_type,
         "timestamp": timestamp.isoformat(),
+        "media_url": alert_row.media_url,
         "whatsapp_sent": alert_row.whatsapp_sent,
     }
 
@@ -577,6 +623,47 @@ def shop_status(shop_id):
     except Exception:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+@app.post("/shop/<shop_id>/media/upload-url")
+@auth_required
+def media_upload_url(shop_id):
+    try:
+        payload = parse_media_upload_request(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        _, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        object_key = f"alerts/{shop_id}/{uuid4()}.{payload['extension']}"
+        bucket_name = os.environ["R2_BUCKET_NAME"]
+        upload_url = r2_client().generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": bucket_name,
+                "Key": object_key,
+                "ContentType": payload["content_type"],
+            },
+            ExpiresIn=UPLOAD_URL_EXPIRES_SECONDS,
+            HttpMethod="PUT",
+        )
+        public_url = f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
+        return jsonify({
+            "ok": True,
+            "upload_url": upload_url,
+            "public_url": public_url,
+            "object_key": object_key,
+            "content_type": payload["content_type"],
+            "expires_in": UPLOAD_URL_EXPIRES_SECONDS,
+        })
+    except KeyError as exc:
+        return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
     finally:
         db.close()
 
