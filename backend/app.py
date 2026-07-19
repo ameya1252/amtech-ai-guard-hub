@@ -16,9 +16,18 @@ from database import Alert, Device, Shop, SessionLocal, User, init_db
 
 app = Flask(__name__)
 JWT_SECRET = os.environ["JWT_SECRET"]
+
+
+def rate_limit_key():
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return get_remote_address()
+
+
 # In-memory limits are fine for the current single-instance Railway pilot.
 # Move to a shared store such as Redis before running multiple backend instances.
-limiter = Limiter(get_remote_address, app=app)
+limiter = Limiter(rate_limit_key, app=app)
 init_db()
 
 
