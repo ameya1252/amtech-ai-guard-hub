@@ -72,6 +72,12 @@ int main(void)
     check_int("dual shutter open while armed triggers", alarm_logic_is_triggered(), 1);
 
     alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_dual_named(SHUTTER_OPEN, "shutter-2", "shutter-2");
+
+    check_int("dual shutter-2 open while armed triggers", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(42);
     alarm_logic_set_armed(0);
     alarm_logic_handle_shutter_dual(SHUTTER_TAMPER);
 
@@ -82,6 +88,12 @@ int main(void)
     alarm_logic_handle_shutter_dual(SHUTTER_TAMPER);
 
     check_int("dual shutter tamper while armed triggers", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+    alarm_logic_handle_shutter_dual_named(SHUTTER_TAMPER, "shutter-2", "shutter-2");
+
+    check_int("dual shutter-2 tamper while disarmed triggers", alarm_logic_is_triggered(), 1);
 
     alarm_logic_init(42);
     alarm_logic_set_armed(1);

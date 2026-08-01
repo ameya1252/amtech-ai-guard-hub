@@ -5,6 +5,8 @@
 #define TEST_SENSOR_PIN 17
 #define TEST_SHUTTER_NC_PIN 33
 #define TEST_SHUTTER_NO_PIN 40
+#define TEST_SHUTTER2_NC_PIN 41
+#define TEST_SHUTTER2_NO_PIN 72
 
 static int check_read(const char *label, int expected)
 {
@@ -21,15 +23,20 @@ static int check_read(const char *label, int expected)
     return actual == expected ? 0 : 1;
 }
 
-static int check_shutter_state(const char *label, int nc_raw, int no_raw, shutter_state_t expected)
+static int check_shutter_state_for_pins(const char *label,
+                                        int nc_pin,
+                                        int no_pin,
+                                        int nc_raw,
+                                        int no_raw,
+                                        shutter_state_t expected)
 {
     shutter_state_t actual;
     const char *result;
 
-    sensor_input_set_simulated_raw_value(TEST_SHUTTER_NC_PIN, nc_raw);
-    sensor_input_set_simulated_raw_value(TEST_SHUTTER_NO_PIN, no_raw);
+    sensor_input_set_simulated_raw_value(nc_pin, nc_raw);
+    sensor_input_set_simulated_raw_value(no_pin, no_raw);
 
-    actual = shutter_read_dual_state(TEST_SHUTTER_NC_PIN, TEST_SHUTTER_NO_PIN);
+    actual = shutter_read_dual_state(nc_pin, no_pin);
     result = actual == expected ? "PASS" : "FAIL";
 
     printf("%s: NC raw %d, NO raw %d -> %s, expected %s: %s\n",
@@ -41,6 +48,16 @@ static int check_shutter_state(const char *label, int nc_raw, int no_raw, shutte
            result);
 
     return actual == expected ? 0 : 1;
+}
+
+static int check_shutter_state(const char *label, int nc_raw, int no_raw, shutter_state_t expected)
+{
+    return check_shutter_state_for_pins(label,
+                                        TEST_SHUTTER_NC_PIN,
+                                        TEST_SHUTTER_NO_PIN,
+                                        nc_raw,
+                                        no_raw,
+                                        expected);
 }
 
 int main(void)
@@ -63,6 +80,31 @@ int main(void)
     failures += check_shutter_state("Shutter open", 1, 0, SHUTTER_OPEN);
     failures += check_shutter_state("Shutter wire cut / open circuit", 1, 1, SHUTTER_TAMPER);
     failures += check_shutter_state("Shutter short circuit", 0, 0, SHUTTER_FAULT);
+
+    failures += check_shutter_state_for_pins("Shutter-2 closed",
+                                             TEST_SHUTTER2_NC_PIN,
+                                             TEST_SHUTTER2_NO_PIN,
+                                             0,
+                                             1,
+                                             SHUTTER_CLOSED);
+    failures += check_shutter_state_for_pins("Shutter-2 open",
+                                             TEST_SHUTTER2_NC_PIN,
+                                             TEST_SHUTTER2_NO_PIN,
+                                             1,
+                                             0,
+                                             SHUTTER_OPEN);
+    failures += check_shutter_state_for_pins("Shutter-2 wire cut / open circuit",
+                                             TEST_SHUTTER2_NC_PIN,
+                                             TEST_SHUTTER2_NO_PIN,
+                                             1,
+                                             1,
+                                             SHUTTER_TAMPER);
+    failures += check_shutter_state_for_pins("Shutter-2 short circuit",
+                                             TEST_SHUTTER2_NC_PIN,
+                                             TEST_SHUTTER2_NO_PIN,
+                                             0,
+                                             0,
+                                             SHUTTER_FAULT);
 
     if (failures == 0)
     {

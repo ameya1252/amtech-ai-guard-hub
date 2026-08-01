@@ -19,6 +19,8 @@
 #define AMTECH_STROBE_GPIO_PIN 48
 #define AMTECH_SHUTTER_NC_GPIO_PIN 33
 #define AMTECH_SHUTTER_NO_GPIO_PIN 40
+#define AMTECH_SHUTTER2_NC_GPIO_PIN 41
+#define AMTECH_SHUTTER2_NO_GPIO_PIN 72
 #define AMTECH_PANIC_GPIO_PIN 32
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
@@ -64,8 +66,10 @@ static void print_force_armed_warning(void)
 #ifndef SIMULATE_GPIO
 typedef enum
 {
-    WATCH_SHUTTER_NC = 0,
-    WATCH_SHUTTER_NO,
+    WATCH_SHUTTER1_NC = 0,
+    WATCH_SHUTTER1_NO,
+    WATCH_SHUTTER2_NC,
+    WATCH_SHUTTER2_NO,
     WATCH_PANIC,
     WATCH_COUNT
 } watched_pin_role_t;
@@ -76,6 +80,10 @@ typedef struct
     watched_pin_role_t role;
     const char *name;
     const char *edge;
+    int shutter_nc_pin;
+    int shutter_no_pin;
+    const char *shutter_name;
+    const char *shutter_event_type;
     int fd;
     long long last_event_ms;
 } gpio_watch_t;
@@ -246,8 +254,10 @@ static void handle_sensor_event(gpio_watch_t *watch)
         return;
     }
 
-    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
-    alarm_logic_handle_shutter_dual(shutter_state);
+    shutter_state = shutter_read_dual_state(watch->shutter_nc_pin, watch->shutter_no_pin);
+    alarm_logic_handle_shutter_dual_named(shutter_state,
+                                          watch->shutter_name,
+                                          watch->shutter_event_type);
 }
 
 static int run_interrupt_loop(int force_armed)
@@ -257,9 +267,16 @@ static int run_interrupt_loop(int force_armed)
      * NC LOW -> HIGH with NO already HIGH, so falling-only would not wake us.
      */
     gpio_watch_t watches[WATCH_COUNT] = {
-        {AMTECH_SHUTTER_NC_GPIO_PIN, WATCH_SHUTTER_NC, "shutter NC", "both", -1, 0},
-        {AMTECH_SHUTTER_NO_GPIO_PIN, WATCH_SHUTTER_NO, "shutter NO", "both", -1, 0},
-        {AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "falling", -1, 0},
+        {AMTECH_SHUTTER_NC_GPIO_PIN, WATCH_SHUTTER1_NC, "shutter-1 NC", "both",
+         AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN, "shutter-1", "shutter-1", -1, 0},
+        {AMTECH_SHUTTER_NO_GPIO_PIN, WATCH_SHUTTER1_NO, "shutter-1 NO", "both",
+         AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN, "shutter-1", "shutter-1", -1, 0},
+        {AMTECH_SHUTTER2_NC_GPIO_PIN, WATCH_SHUTTER2_NC, "shutter-2 NC", "both",
+         AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0},
+        {AMTECH_SHUTTER2_NO_GPIO_PIN, WATCH_SHUTTER2_NO, "shutter-2 NO", "both",
+         AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0},
+        {AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "falling",
+         -1, -1, NULL, NULL, -1, 0},
     };
     struct pollfd poll_fds[WATCH_COUNT];
     long long last_schedule_tick_ms = 0;
@@ -340,10 +357,15 @@ static void runtime_iteration(int iteration, int force_armed)
 #ifdef SIMULATE_GPIO
     sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NC_GPIO_PIN, iteration == 4 ? 1 : 0);
     sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NO_GPIO_PIN, iteration == 4 ? 0 : 1);
+    sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NC_GPIO_PIN, iteration == 5 ? 1 : 0);
+    sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NO_GPIO_PIN, iteration == 5 ? 0 : 1);
 #endif
 
     shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
-    alarm_logic_handle_shutter_dual(shutter_state);
+    alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-1", "shutter-1");
+
+    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
+    alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-2", "shutter-2");
 
 #ifdef SIMULATE_GPIO
     sensor_input_simulated_state = iteration == 6 ? 0 : 1;
@@ -391,6 +413,8 @@ int main(int argc, char **argv)
 #ifdef SIMULATE_GPIO
     sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN);
     sensor_input_init(AMTECH_SHUTTER_NO_GPIO_PIN);
+    sensor_input_init(AMTECH_SHUTTER2_NC_GPIO_PIN);
+    sensor_input_init(AMTECH_SHUTTER2_NO_GPIO_PIN);
     sensor_input_init(AMTECH_PANIC_GPIO_PIN);
 #endif
     schedule_set_armed_window(23, 0, 6, 0);
