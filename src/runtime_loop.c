@@ -55,6 +55,44 @@ static long long monotonic_ms(void)
     return ((long long)now.tv_sec * 1000) + (now.tv_nsec / 1000000);
 }
 
+static void update_schedule_from_realtime(void)
+{
+    time_t now_seconds;
+    struct tm now_local;
+
+    now_seconds = time(NULL);
+    if (now_seconds == (time_t)-1)
+    {
+        printf("Runtime: time failed: %s\n", strerror(errno));
+        return;
+    }
+
+    if (localtime_r(&now_seconds, &now_local) == NULL)
+    {
+        printf("Runtime: localtime_r failed\n");
+        return;
+    }
+
+    alarm_logic_set_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
+}
+
+static void tick_schedule_elapsed_seconds(long long *last_tick_ms)
+{
+    long long now_ms = monotonic_ms();
+
+    if (*last_tick_ms == 0)
+    {
+        *last_tick_ms = now_ms;
+        return;
+    }
+
+    while (now_ms - *last_tick_ms >= 1000)
+    {
+        schedule_tick();
+        *last_tick_ms += 1000;
+    }
+}
+
 static int read_gpio_value_fd(int fd, int *raw_value)
 {
     char value = 0;
@@ -186,6 +224,7 @@ static int run_interrupt_loop(void)
         {AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "falling", -1, 0},
     };
     struct pollfd poll_fds[WATCH_COUNT];
+    long long last_schedule_tick_ms = 0;
     int i;
 
     for (i = 0; i < WATCH_COUNT; i++)
@@ -205,8 +244,8 @@ static int run_interrupt_loop(void)
     {
         int ready;
 
-        schedule_tick();
-        alarm_logic_set_armed(schedule_should_be_armed(23, 30));
+        tick_schedule_elapsed_seconds(&last_schedule_tick_ms);
+        update_schedule_from_realtime();
 
         ready = poll(poll_fds, WATCH_COUNT, 1000);
         if (ready < 0)
