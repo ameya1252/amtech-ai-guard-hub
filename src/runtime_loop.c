@@ -199,7 +199,7 @@ static void handle_sensor_event(gpio_watch_t *watch)
         return;
     }
 
-    printf("Runtime: %s GPIO %d falling-edge event raw=%d\n", watch->name, watch->pin, raw_value);
+    printf("Runtime: %s GPIO %d edge event raw=%d\n", watch->name, watch->pin, raw_value);
 
     if (watch->role == WATCH_PANIC)
     {
