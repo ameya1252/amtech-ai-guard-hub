@@ -6,15 +6,15 @@
 
 #define AMTECH_ALARM_GPIO_PIN 49
 #define AMTECH_STROBE_GPIO_PIN 48
-/* TODO: Replace single NC-pin shutter sensing with dual NC/NO logic: NC=33, NO=40. */
-#define AMTECH_SHUTTER_GPIO_PIN 33
+#define AMTECH_SHUTTER_NC_GPIO_PIN 33
+#define AMTECH_SHUTTER_NO_GPIO_PIN 40
 #define AMTECH_PANIC_GPIO_PIN 32
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 
 static void runtime_iteration(int iteration)
 {
-    int shutter_triggered;
+    shutter_state_t shutter_state;
     int panic_triggered;
     int should_be_armed;
 
@@ -26,11 +26,12 @@ static void runtime_iteration(int iteration)
     alarm_logic_set_armed(should_be_armed);
 
 #ifdef SIMULATE_GPIO
-    sensor_input_simulated_state = iteration == 4 ? 0 : 1;
+    sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NC_GPIO_PIN, iteration == 4 ? 1 : 0);
+    sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NO_GPIO_PIN, iteration == 4 ? 0 : 1);
 #endif
 
-    shutter_triggered = sensor_input_read(AMTECH_SHUTTER_GPIO_PIN);
-    alarm_logic_handle_shutter_sensor(shutter_triggered);
+    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
+    alarm_logic_handle_shutter_dual(shutter_state);
 
 #ifdef SIMULATE_GPIO
     sensor_input_simulated_state = iteration == 6 ? 0 : 1;
@@ -53,7 +54,8 @@ int main(void)
     alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
     alarm_logic_set_shop_id(AMTECH_SHOP_ID);
     alarm_logic_set_armed(0);
-    sensor_input_init(AMTECH_SHUTTER_GPIO_PIN);
+    sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN);
+    sensor_input_init(AMTECH_SHUTTER_NO_GPIO_PIN);
     sensor_input_init(AMTECH_PANIC_GPIO_PIN);
     schedule_set_armed_window(23, 0, 6, 0);
 

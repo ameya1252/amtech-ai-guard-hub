@@ -3,6 +3,8 @@
 #include <stdio.h>
 
 #define TEST_SENSOR_PIN 17
+#define TEST_SHUTTER_NC_PIN 33
+#define TEST_SHUTTER_NO_PIN 40
 
 static int check_read(const char *label, int expected)
 {
@@ -14,6 +16,28 @@ static int check_read(const char *label, int expected)
            label,
            state,
            expected ? "triggered" : "not triggered",
+           result);
+
+    return actual == expected ? 0 : 1;
+}
+
+static int check_shutter_state(const char *label, int nc_raw, int no_raw, shutter_state_t expected)
+{
+    shutter_state_t actual;
+    const char *result;
+
+    sensor_input_set_simulated_raw_value(TEST_SHUTTER_NC_PIN, nc_raw);
+    sensor_input_set_simulated_raw_value(TEST_SHUTTER_NO_PIN, no_raw);
+
+    actual = shutter_read_dual_state(TEST_SHUTTER_NC_PIN, TEST_SHUTTER_NO_PIN);
+    result = actual == expected ? "PASS" : "FAIL";
+
+    printf("%s: NC raw %d, NO raw %d -> %s, expected %s: %s\n",
+           label,
+           nc_raw,
+           no_raw,
+           shutter_state_to_string(actual),
+           shutter_state_to_string(expected),
            result);
 
     return actual == expected ? 0 : 1;
@@ -34,6 +58,11 @@ int main(void)
 
     sensor_input_simulated_state = 0;
     failures += check_read("Triggered LOW read", 1);
+
+    failures += check_shutter_state("Shutter closed", 0, 1, SHUTTER_CLOSED);
+    failures += check_shutter_state("Shutter open", 1, 0, SHUTTER_OPEN);
+    failures += check_shutter_state("Shutter wire cut / open circuit", 1, 1, SHUTTER_TAMPER);
+    failures += check_shutter_state("Shutter short circuit", 0, 0, SHUTTER_FAULT);
 
     if (failures == 0)
     {

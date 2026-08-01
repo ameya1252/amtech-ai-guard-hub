@@ -54,6 +54,42 @@ int main(void)
     check_int("shutter sensor while armed triggers immediately", alarm_logic_is_triggered(), 1);
 
     alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_dual(SHUTTER_CLOSED);
+
+    check_int("dual shutter closed does not trigger", alarm_logic_is_triggered(), 0);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+    alarm_logic_handle_shutter_dual(SHUTTER_OPEN);
+
+    check_int("dual shutter open while disarmed does not trigger", alarm_logic_is_triggered(), 0);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_dual(SHUTTER_OPEN);
+
+    check_int("dual shutter open while armed triggers", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+    alarm_logic_handle_shutter_dual(SHUTTER_TAMPER);
+
+    check_int("dual shutter tamper while disarmed triggers", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_dual(SHUTTER_TAMPER);
+
+    check_int("dual shutter tamper while armed triggers", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_dual(SHUTTER_FAULT);
+
+    check_int("dual shutter fault logs without triggering", alarm_logic_is_triggered(), 0);
+
+    alarm_logic_init(42);
     alarm_logic_set_armed(0);
     alarm_logic_handle_panic(1);
 

@@ -141,6 +141,35 @@ void alarm_logic_handle_shutter_sensor(int triggered)
     trigger_alarm();
 }
 
+void alarm_logic_handle_shutter_dual(shutter_state_t state)
+{
+    switch (state)
+    {
+    case SHUTTER_CLOSED:
+        return;
+    case SHUTTER_OPEN:
+        printf("Alarm: shutter open state=%s\n", armed ? "ARMED" : "DISARMED");
+        if (!armed)
+        {
+            return;
+        }
+        pending_alarm_event_type = "shutter";
+        trigger_alarm();
+        return;
+    case SHUTTER_TAMPER:
+        printf("Alarm: shutter wire tamper detected\n");
+        pending_alarm_event_type = "shutter";
+        trigger_alarm();
+        return;
+    case SHUTTER_FAULT:
+        printf("Alarm: shutter hardware fault detected\n");
+        return;
+    default:
+        printf("Alarm: unknown shutter state %d\n", state);
+        return;
+    }
+}
+
 void alarm_logic_handle_panic(int triggered)
 {
     if (!triggered)

@@ -11,7 +11,22 @@
 #define GPIO_PATH_MAX 128
 
 #ifdef SIMULATE_GPIO
+#define SIMULATED_GPIO_MAX 256
 int sensor_input_simulated_state = 0;
+static int simulated_raw_values[SIMULATED_GPIO_MAX];
+static int simulated_raw_values_set[SIMULATED_GPIO_MAX];
+
+void sensor_input_set_simulated_raw_value(int pin, int raw_value)
+{
+    if (pin < 0 || pin >= SIMULATED_GPIO_MAX)
+    {
+        printf("Sensor GPIO: simulated pin %d out of range\n", pin);
+        return;
+    }
+
+    simulated_raw_values[pin] = raw_value ? 1 : 0;
+    simulated_raw_values_set[pin] = 1;
+}
 #endif
 
 static int write_text_file(const char *path, const char *value)
@@ -87,6 +102,10 @@ int sensor_input_read(int pin)
 {
 #ifdef SIMULATE_GPIO
     int raw_value = sensor_input_simulated_state ? 1 : 0;
+    if (pin >= 0 && pin < SIMULATED_GPIO_MAX && simulated_raw_values_set[pin])
+    {
+        raw_value = simulated_raw_values[pin];
+    }
     int triggered = raw_value == 0 ? 1 : 0;
     printf("Sensor GPIO %d raw %d triggered %d\n", pin, raw_value, triggered);
     return triggered;
@@ -118,4 +137,50 @@ int sensor_input_read(int pin)
 
     return value == '0' ? 1 : 0;
 #endif
+}
+
+shutter_state_t shutter_read_dual_state(int nc_pin, int no_pin)
+{
+    int nc_low = sensor_input_read(nc_pin);
+    int no_low = sensor_input_read(no_pin);
+
+    if (nc_low < 0 || no_low < 0)
+    {
+        printf("Shutter: failed to read dual sensor pins nc=%d no=%d\n", nc_pin, no_pin);
+        return SHUTTER_FAULT;
+    }
+
+    if (nc_low && !no_low)
+    {
+        return SHUTTER_CLOSED;
+    }
+
+    if (!nc_low && no_low)
+    {
+        return SHUTTER_OPEN;
+    }
+
+    if (!nc_low && !no_low)
+    {
+        return SHUTTER_TAMPER;
+    }
+
+    return SHUTTER_FAULT;
+}
+
+const char *shutter_state_to_string(shutter_state_t state)
+{
+    switch (state)
+    {
+    case SHUTTER_CLOSED:
+        return "closed";
+    case SHUTTER_OPEN:
+        return "open";
+    case SHUTTER_TAMPER:
+        return "tamper";
+    case SHUTTER_FAULT:
+        return "fault";
+    default:
+        return "unknown";
+    }
 }

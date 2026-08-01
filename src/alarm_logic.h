@@ -1,6 +1,8 @@
 #ifndef AMTECH_ALARM_LOGIC_H
 #define AMTECH_ALARM_LOGIC_H
 
+#include "sensor_input.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -13,6 +15,7 @@ int alarm_logic_is_armed(void);
 int alarm_logic_is_triggered(void);
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence);
 void alarm_logic_handle_shutter_sensor(int triggered);
+void alarm_logic_handle_shutter_dual(shutter_state_t state);
 void alarm_logic_handle_panic(int triggered);
 void alarm_logic_end_frame(void);
 void trigger_alarm(void);
