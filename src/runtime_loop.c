@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef SIMULATE_GPIO
@@ -22,6 +23,43 @@
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_SENSOR_DEBOUNCE_MS 25
+
+static int env_force_armed_enabled(void)
+{
+    const char *value = getenv("AMTECH_FORCE_ARMED");
+
+    return value != NULL &&
+           (strcmp(value, "1") == 0 ||
+            strcmp(value, "true") == 0 ||
+            strcmp(value, "TRUE") == 0 ||
+            strcmp(value, "yes") == 0 ||
+            strcmp(value, "YES") == 0);
+}
+
+static int parse_force_armed_arg(int argc, char **argv)
+{
+    int i;
+
+    for (i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--force-armed") == 0)
+        {
+            return 1;
+        }
+
+        printf("Runtime: unknown argument %s\n", argv[i]);
+        printf("Usage: %s [--force-armed]\n", argv[0]);
+        return -1;
+    }
+
+    return env_force_armed_enabled();
+}
+
+static void print_force_armed_warning(void)
+{
+    printf("WARNING: FORCE-ARMED TEST MODE - NOT FOR PRODUCTION USE\n");
+    printf("WARNING: Schedule checks are disabled and the system is forced ARMED\n");
+}
 
 #ifndef SIMULATE_GPIO
 typedef enum
@@ -212,7 +250,7 @@ static void handle_sensor_event(gpio_watch_t *watch)
     alarm_logic_handle_shutter_dual(shutter_state);
 }
 
-static int run_interrupt_loop(void)
+static int run_interrupt_loop(int force_armed)
 {
     /*
      * Shutter uses both edges because wire-cut tamper from the closed state is
@@ -244,8 +282,11 @@ static int run_interrupt_loop(void)
     {
         int ready;
 
-        tick_schedule_elapsed_seconds(&last_schedule_tick_ms);
-        update_schedule_from_realtime();
+        if (!force_armed)
+        {
+            tick_schedule_elapsed_seconds(&last_schedule_tick_ms);
+            update_schedule_from_realtime();
+        }
 
         ready = poll(poll_fds, WATCH_COUNT, 1000);
         if (ready < 0)
@@ -280,7 +321,7 @@ static int run_interrupt_loop(void)
 #endif
 
 #ifdef SIMULATE_GPIO
-static void runtime_iteration(int iteration)
+static void runtime_iteration(int iteration, int force_armed)
 {
     shutter_state_t shutter_state;
     int panic_triggered;
@@ -288,10 +329,13 @@ static void runtime_iteration(int iteration)
 
     printf("Runtime: iteration %d\n", iteration);
 
-    schedule_tick();
+    if (!force_armed)
+    {
+        schedule_tick();
 
-    should_be_armed = schedule_should_be_armed(23, 30);
-    alarm_logic_set_armed(should_be_armed);
+        should_be_armed = schedule_should_be_armed(23, 30);
+        alarm_logic_set_armed(should_be_armed);
+    }
 
 #ifdef SIMULATE_GPIO
     sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NC_GPIO_PIN, iteration == 4 ? 1 : 0);
@@ -316,15 +360,34 @@ static void runtime_iteration(int iteration)
 }
 #endif
 
-int main(void)
+int main(int argc, char **argv)
 {
+    int force_armed;
 #ifdef SIMULATE_GPIO
     int i;
 #endif
 
+    force_armed = parse_force_armed_arg(argc, argv);
+    if (force_armed < 0)
+    {
+        return 1;
+    }
+
     alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
     alarm_logic_set_shop_id(AMTECH_SHOP_ID);
-    alarm_logic_set_armed(0);
+    if (force_armed)
+    {
+        /*
+         * Testing-only override for bench/bring-up validation. Do not use this
+         * in production because it deliberately bypasses the real arm schedule.
+         */
+        print_force_armed_warning();
+        alarm_logic_set_armed(1);
+    }
+    else
+    {
+        alarm_logic_set_armed(0);
+    }
 #ifdef SIMULATE_GPIO
     sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN);
     sensor_input_init(AMTECH_SHUTTER_NO_GPIO_PIN);
@@ -335,11 +398,11 @@ int main(void)
 #ifdef SIMULATE_GPIO
     for (i = 0; i < AMTECH_RUNTIME_TEST_ITERATIONS; i++)
     {
-        runtime_iteration(i);
+        runtime_iteration(i, force_armed);
     }
 
     return 0;
 #else
-    return run_interrupt_loop();
+    return run_interrupt_loop(force_armed);
 #endif
 }
