@@ -86,9 +86,10 @@ int sensor_input_init(int pin)
 int sensor_input_read(int pin)
 {
 #ifdef SIMULATE_GPIO
-    int normalized_value = sensor_input_simulated_state ? 1 : 0;
-    printf("Sensor GPIO %d read %d\n", pin, normalized_value);
-    return normalized_value;
+    int raw_value = sensor_input_simulated_state ? 1 : 0;
+    int triggered = raw_value == 0 ? 1 : 0;
+    printf("Sensor GPIO %d raw %d triggered %d\n", pin, raw_value, triggered);
+    return triggered;
 #else
     char path[GPIO_PATH_MAX];
     char value = 0;
@@ -115,6 +116,6 @@ int sensor_input_read(int pin)
         return -1;
     }
 
-    return value == '0' ? 0 : 1;
+    return value == '0' ? 1 : 0;
 #endif
 }

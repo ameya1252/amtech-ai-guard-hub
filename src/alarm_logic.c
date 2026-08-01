@@ -39,7 +39,7 @@ void alarm_logic_init(int gpio_pin)
         return;
     }
 
-    gpio_write_value(alarm_gpio_pin, 0);
+    gpio_write_value(alarm_gpio_pin, 1);
 }
 
 void alarm_logic_set_shop_id(const char *shop_id)
@@ -90,7 +90,7 @@ void trigger_alarm(void)
 
     if (alarm_gpio_pin >= 0)
     {
-        gpio_write_value(alarm_gpio_pin, 1);
+        gpio_write_value(alarm_gpio_pin, 0);
     }
 
     notify_send_alert(alarm_shop_id, pending_alarm_event_type);

@@ -29,11 +29,11 @@ int main(void)
         return 1;
     }
 
-    sensor_input_simulated_state = 0;
-    failures += check_read("Initial read", 0);
-
     sensor_input_simulated_state = 1;
-    failures += check_read("Triggered read", 1);
+    failures += check_read("Initial HIGH read", 0);
+
+    sensor_input_simulated_state = 0;
+    failures += check_read("Triggered LOW read", 1);
 
     if (failures == 0)
     {
