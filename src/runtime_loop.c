@@ -4,14 +4,18 @@
 
 #include <stdio.h>
 
-#define AMTECH_ALARM_GPIO_PIN 42
-#define AMTECH_SHUTTER_GPIO_PIN 27
+#define AMTECH_ALARM_GPIO_PIN 49
+#define AMTECH_STROBE_GPIO_PIN 48
+/* TODO: Replace single NC-pin shutter sensing with dual NC/NO logic: NC=33, NO=40. */
+#define AMTECH_SHUTTER_GPIO_PIN 33
+#define AMTECH_PANIC_GPIO_PIN 32
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 
 static void runtime_iteration(int iteration)
 {
     int shutter_triggered;
+    int panic_triggered;
     int should_be_armed;
 
     printf("Runtime: iteration %d\n", iteration);
@@ -22,11 +26,18 @@ static void runtime_iteration(int iteration)
     alarm_logic_set_armed(should_be_armed);
 
 #ifdef SIMULATE_GPIO
-    sensor_input_simulated_state = iteration == 4 ? 1 : 0;
+    sensor_input_simulated_state = iteration == 4 ? 0 : 1;
 #endif
 
     shutter_triggered = sensor_input_read(AMTECH_SHUTTER_GPIO_PIN);
     alarm_logic_handle_shutter_sensor(shutter_triggered);
+
+#ifdef SIMULATE_GPIO
+    sensor_input_simulated_state = iteration == 6 ? 0 : 1;
+#endif
+
+    panic_triggered = sensor_input_read(AMTECH_PANIC_GPIO_PIN);
+    alarm_logic_handle_panic(panic_triggered);
 
     /*
      * TODO: Capture camera frame, run RKNN YOLO inference, pass each detection to
@@ -43,6 +54,7 @@ int main(void)
     alarm_logic_set_shop_id(AMTECH_SHOP_ID);
     alarm_logic_set_armed(0);
     sensor_input_init(AMTECH_SHUTTER_GPIO_PIN);
+    sensor_input_init(AMTECH_PANIC_GPIO_PIN);
     schedule_set_armed_window(23, 0, 6, 0);
 
 #ifdef SIMULATE_GPIO

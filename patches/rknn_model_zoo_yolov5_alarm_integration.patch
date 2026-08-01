@@ -36,21 +36,22 @@ index fce90e6..b2d8ea6 100644
 \ No newline at end of file
 +install(FILES ${RKNN_FILES} DESTINATION model)
 diff --git a/examples/yolov5/cpp/main.cc b/examples/yolov5/cpp/main.cc
-index 90acf96..e818873 100644
+index 90acf96..a3579dc 100644
 --- a/examples/yolov5/cpp/main.cc
 +++ b/examples/yolov5/cpp/main.cc
-@@ -24,6 +24,10 @@
+@@ -24,6 +24,11 @@
  #include "image_utils.h"
  #include "file_utils.h"
  #include "image_drawing.h"
 +#include "../../../../src/alarm_logic.h"
 +
-+#define AMTECH_ALARM_GPIO_PIN 42
++#define AMTECH_ALARM_GPIO_PIN 49
++#define AMTECH_STROBE_GPIO_PIN 48
 +#define AMTECH_SHOP_ID "amtech-demo-shop"
  
  #if defined(RV1106_1103) 
      #include "dma_alloc.hpp"
-@@ -47,6 +51,10 @@ int main(int argc, char **argv)
+@@ -47,6 +52,10 @@ int main(int argc, char **argv)
      rknn_app_context_t rknn_app_ctx;
      memset(&rknn_app_ctx, 0, sizeof(rknn_app_context_t));
  
@@ -61,7 +62,7 @@ index 90acf96..e818873 100644
      init_post_process();
  
      ret = init_yolov5_model(model_path, &rknn_app_ctx);
-@@ -92,6 +100,10 @@ int main(int argc, char **argv)
+@@ -92,6 +101,10 @@ int main(int argc, char **argv)
      for (int i = 0; i < od_results.count; i++)
      {
          object_detect_result *det_result = &(od_results.results[i]);
@@ -72,7 +73,7 @@ index 90acf96..e818873 100644
          printf("%s @ (%d %d %d %d) %.3f\n", coco_cls_to_name(det_result->cls_id),
                 det_result->box.left, det_result->box.top,
                 det_result->box.right, det_result->box.bottom,
-@@ -106,6 +118,7 @@ int main(int argc, char **argv)
+@@ -106,6 +119,7 @@ int main(int argc, char **argv)
          sprintf(text, "%s %.1f%%", coco_cls_to_name(det_result->cls_id), det_result->prop * 100);
          draw_text(&src_image, text, x1, y1 - 20, COLOR_RED, 10);
      }
