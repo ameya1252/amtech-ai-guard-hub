@@ -143,6 +143,18 @@ void alarm_logic_handle_shutter_sensor(int triggered)
     trigger_alarm();
 }
 
+void alarm_logic_handle_panic(int triggered)
+{
+    if (!triggered)
+    {
+        return;
+    }
+
+    printf("Alarm: PANIC button triggered\n");
+    pending_alarm_event_type = "panic";
+    trigger_alarm();
+}
+
 void alarm_logic_end_frame(void)
 {
     if (!armed)

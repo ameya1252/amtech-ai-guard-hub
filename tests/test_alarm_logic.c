@@ -53,6 +53,18 @@ int main(void)
 
     check_int("shutter sensor while armed triggers immediately", alarm_logic_is_triggered(), 1);
 
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+    alarm_logic_handle_panic(1);
+
+    check_int("panic button while disarmed triggers immediately", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_panic(1);
+
+    check_int("panic button while armed triggers immediately", alarm_logic_is_triggered(), 1);
+
     if (failures == 0)
     {
         printf("PASS: alarm logic behaved as expected\n");
