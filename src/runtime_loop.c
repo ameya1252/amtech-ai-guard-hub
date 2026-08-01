@@ -279,6 +279,7 @@ static int run_interrupt_loop(void)
 }
 #endif
 
+#ifdef SIMULATE_GPIO
 static void runtime_iteration(int iteration)
 {
     shutter_state_t shutter_state;
@@ -313,6 +314,7 @@ static void runtime_iteration(int iteration)
      */
     alarm_logic_end_frame();
 }
+#endif
 
 int main(void)
 {
