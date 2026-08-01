@@ -1,5 +1,7 @@
 #include "alarm_logic.h"
+#include "config.h"
 #include "gpio_control.h"
+#include "runtime_loop.h"
 #include "schedule.h"
 #include "sensor_input.h"
 
@@ -25,6 +27,121 @@
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_SENSOR_DEBOUNCE_MS 25
+
+typedef enum
+{
+    WATCH_SHUTTER1_NC = 0,
+    WATCH_SHUTTER1_NO,
+    WATCH_SHUTTER2_NC,
+    WATCH_SHUTTER2_NO,
+    WATCH_PANIC
+} watched_pin_role_t;
+
+typedef struct
+{
+    int pin;
+    watched_pin_role_t role;
+    const char *name;
+    const char *edge;
+    int shutter_nc_pin;
+    int shutter_no_pin;
+    const char *shutter_name;
+    const char *shutter_event_type;
+    int fd;
+    long long last_event_ms;
+} gpio_watch_t;
+
+static const gpio_watch_t SHUTTER1_NC_WATCH = {
+    AMTECH_SHUTTER_NC_GPIO_PIN, WATCH_SHUTTER1_NC, "shutter-1 NC", "both",
+    AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN, "shutter-1", "shutter-1", -1, 0};
+static const gpio_watch_t SHUTTER1_NO_WATCH = {
+    AMTECH_SHUTTER_NO_GPIO_PIN, WATCH_SHUTTER1_NO, "shutter-1 NO", "both",
+    AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN, "shutter-1", "shutter-1", -1, 0};
+static const gpio_watch_t SHUTTER2_NC_WATCH = {
+    AMTECH_SHUTTER2_NC_GPIO_PIN, WATCH_SHUTTER2_NC, "shutter-2 NC", "both",
+    AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0};
+static const gpio_watch_t SHUTTER2_NO_WATCH = {
+    AMTECH_SHUTTER2_NO_GPIO_PIN, WATCH_SHUTTER2_NO, "shutter-2 NO", "both",
+    AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0};
+static const gpio_watch_t PANIC_WATCH = {
+    AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "falling",
+    -1, -1, NULL, NULL, -1, 0};
+
+static int add_watch(gpio_watch_t watches[], int max_watches, int *count, const gpio_watch_t *watch)
+{
+    if (*count >= max_watches)
+    {
+        printf("Runtime: too many GPIO watches configured\n");
+        return -1;
+    }
+
+    watches[*count] = *watch;
+    (*count)++;
+    return 0;
+}
+
+static int build_gpio_watches(const amtech_config_t *config, gpio_watch_t watches[], int max_watches)
+{
+    int count = 0;
+
+    if (config == NULL)
+    {
+        return -1;
+    }
+
+    if (add_watch(watches, max_watches, &count, &SHUTTER1_NC_WATCH) != 0 ||
+        add_watch(watches, max_watches, &count, &SHUTTER1_NO_WATCH) != 0)
+    {
+        return -1;
+    }
+
+    if (config->shutter_count >= 2)
+    {
+        if (add_watch(watches, max_watches, &count, &SHUTTER2_NC_WATCH) != 0 ||
+            add_watch(watches, max_watches, &count, &SHUTTER2_NO_WATCH) != 0)
+        {
+            return -1;
+        }
+    }
+
+    if (config->panic_enabled)
+    {
+        if (add_watch(watches, max_watches, &count, &PANIC_WATCH) != 0)
+        {
+            return -1;
+        }
+    }
+
+    return count;
+}
+
+int runtime_build_watched_pins(const amtech_config_t *config,
+                               runtime_watched_pin_t watched_pins[],
+                               int max_watched_pins)
+{
+    gpio_watch_t watches[AMTECH_RUNTIME_MAX_WATCHED_PINS];
+    int count;
+    int i;
+
+    if (watched_pins == NULL || max_watched_pins <= 0)
+    {
+        return -1;
+    }
+
+    count = build_gpio_watches(config, watches, AMTECH_RUNTIME_MAX_WATCHED_PINS);
+    if (count < 0 || count > max_watched_pins)
+    {
+        return -1;
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        watched_pins[i].pin = watches[i].pin;
+        watched_pins[i].name = watches[i].name;
+    }
+
+    return count;
+}
 
 static int env_force_armed_enabled(void)
 {
@@ -63,31 +180,19 @@ static void print_force_armed_warning(void)
     printf("WARNING: Schedule checks are disabled and the system is forced ARMED\n");
 }
 
+static const char *runtime_config_path(void)
+{
+    const char *path = getenv("AMTECH_CONFIG_PATH");
+
+    if (path != NULL && path[0] != '\0')
+    {
+        return path;
+    }
+
+    return AMTECH_DEFAULT_CONFIG_PATH;
+}
+
 #ifndef SIMULATE_GPIO
-typedef enum
-{
-    WATCH_SHUTTER1_NC = 0,
-    WATCH_SHUTTER1_NO,
-    WATCH_SHUTTER2_NC,
-    WATCH_SHUTTER2_NO,
-    WATCH_PANIC,
-    WATCH_COUNT
-} watched_pin_role_t;
-
-typedef struct
-{
-    int pin;
-    watched_pin_role_t role;
-    const char *name;
-    const char *edge;
-    int shutter_nc_pin;
-    int shutter_no_pin;
-    const char *shutter_name;
-    const char *shutter_event_type;
-    int fd;
-    long long last_event_ms;
-} gpio_watch_t;
-
 static long long monotonic_ms(void)
 {
     struct timespec now;
@@ -260,33 +365,29 @@ static void handle_sensor_event(gpio_watch_t *watch)
                                           watch->shutter_event_type);
 }
 
-static int run_interrupt_loop(int force_armed)
+static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
 {
     /*
      * Shutter uses both edges because wire-cut tamper from the closed state is
      * NC LOW -> HIGH with NO already HIGH, so falling-only would not wake us.
      */
-    gpio_watch_t watches[WATCH_COUNT] = {
-        {AMTECH_SHUTTER_NC_GPIO_PIN, WATCH_SHUTTER1_NC, "shutter-1 NC", "both",
-         AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN, "shutter-1", "shutter-1", -1, 0},
-        {AMTECH_SHUTTER_NO_GPIO_PIN, WATCH_SHUTTER1_NO, "shutter-1 NO", "both",
-         AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN, "shutter-1", "shutter-1", -1, 0},
-        {AMTECH_SHUTTER2_NC_GPIO_PIN, WATCH_SHUTTER2_NC, "shutter-2 NC", "both",
-         AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0},
-        {AMTECH_SHUTTER2_NO_GPIO_PIN, WATCH_SHUTTER2_NO, "shutter-2 NO", "both",
-         AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0},
-        {AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "falling",
-         -1, -1, NULL, NULL, -1, 0},
-    };
-    struct pollfd poll_fds[WATCH_COUNT];
+    gpio_watch_t watches[AMTECH_RUNTIME_MAX_WATCHED_PINS];
+    struct pollfd poll_fds[AMTECH_RUNTIME_MAX_WATCHED_PINS];
     long long last_schedule_tick_ms = 0;
+    int watch_count;
     int i;
 
-    for (i = 0; i < WATCH_COUNT; i++)
+    watch_count = build_gpio_watches(config, watches, AMTECH_RUNTIME_MAX_WATCHED_PINS);
+    if (watch_count < 0)
+    {
+        return -1;
+    }
+
+    for (i = 0; i < watch_count; i++)
     {
         if (setup_gpio_watch(&watches[i]) != 0)
         {
-            close_gpio_watches(watches, WATCH_COUNT);
+            close_gpio_watches(watches, watch_count);
             return -1;
         }
 
@@ -305,7 +406,7 @@ static int run_interrupt_loop(int force_armed)
             update_schedule_from_realtime();
         }
 
-        ready = poll(poll_fds, WATCH_COUNT, 1000);
+        ready = poll(poll_fds, watch_count, 1000);
         if (ready < 0)
         {
             if (errno == EINTR)
@@ -314,7 +415,7 @@ static int run_interrupt_loop(int force_armed)
             }
 
             printf("Runtime: poll failed: %s\n", strerror(errno));
-            close_gpio_watches(watches, WATCH_COUNT);
+            close_gpio_watches(watches, watch_count);
             return -1;
         }
 
@@ -323,7 +424,7 @@ static int run_interrupt_loop(int force_armed)
             continue;
         }
 
-        for (i = 0; i < WATCH_COUNT; i++)
+        for (i = 0; i < watch_count; i++)
         {
             if (poll_fds[i].revents & (POLLPRI | POLLERR))
             {
@@ -338,7 +439,7 @@ static int run_interrupt_loop(int force_armed)
 #endif
 
 #ifdef SIMULATE_GPIO
-static void runtime_iteration(int iteration, int force_armed)
+static void runtime_iteration(int iteration, int force_armed, const amtech_config_t *config)
 {
     shutter_state_t shutter_state;
     int panic_triggered;
@@ -354,25 +455,30 @@ static void runtime_iteration(int iteration, int force_armed)
         alarm_logic_set_armed(should_be_armed);
     }
 
-#ifdef SIMULATE_GPIO
     sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NC_GPIO_PIN, iteration == 4 ? 1 : 0);
     sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NO_GPIO_PIN, iteration == 4 ? 0 : 1);
-    sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NC_GPIO_PIN, iteration == 5 ? 1 : 0);
-    sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NO_GPIO_PIN, iteration == 5 ? 0 : 1);
-#endif
+    if (config->shutter_count >= 2)
+    {
+        sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NC_GPIO_PIN, iteration == 5 ? 1 : 0);
+        sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NO_GPIO_PIN, iteration == 5 ? 0 : 1);
+    }
 
     shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
     alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-1", "shutter-1");
 
-    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
-    alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-2", "shutter-2");
+    if (config->shutter_count >= 2)
+    {
+        shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
+        alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-2", "shutter-2");
+    }
 
-#ifdef SIMULATE_GPIO
     sensor_input_simulated_state = iteration == 6 ? 0 : 1;
-#endif
 
-    panic_triggered = sensor_input_read(AMTECH_PANIC_GPIO_PIN);
-    alarm_logic_handle_panic(panic_triggered);
+    if (config->panic_enabled)
+    {
+        panic_triggered = sensor_input_read(AMTECH_PANIC_GPIO_PIN);
+        alarm_logic_handle_panic(panic_triggered);
+    }
 
     /*
      * TODO: Capture camera frame, run RKNN YOLO inference, pass each detection to
@@ -382,15 +488,22 @@ static void runtime_iteration(int iteration, int force_armed)
 }
 #endif
 
+#ifndef AMTECH_RUNTIME_LOOP_NO_MAIN
 int main(int argc, char **argv)
 {
     int force_armed;
+    amtech_config_t config;
 #ifdef SIMULATE_GPIO
     int i;
 #endif
 
     force_armed = parse_force_armed_arg(argc, argv);
     if (force_armed < 0)
+    {
+        return 1;
+    }
+
+    if (amtech_config_load(runtime_config_path(), &config) != 0)
     {
         return 1;
     }
@@ -413,20 +526,27 @@ int main(int argc, char **argv)
 #ifdef SIMULATE_GPIO
     sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN);
     sensor_input_init(AMTECH_SHUTTER_NO_GPIO_PIN);
-    sensor_input_init(AMTECH_SHUTTER2_NC_GPIO_PIN);
-    sensor_input_init(AMTECH_SHUTTER2_NO_GPIO_PIN);
-    sensor_input_init(AMTECH_PANIC_GPIO_PIN);
+    if (config.shutter_count >= 2)
+    {
+        sensor_input_init(AMTECH_SHUTTER2_NC_GPIO_PIN);
+        sensor_input_init(AMTECH_SHUTTER2_NO_GPIO_PIN);
+    }
+    if (config.panic_enabled)
+    {
+        sensor_input_init(AMTECH_PANIC_GPIO_PIN);
+    }
 #endif
     schedule_set_armed_window(23, 0, 6, 0);
 
 #ifdef SIMULATE_GPIO
     for (i = 0; i < AMTECH_RUNTIME_TEST_ITERATIONS; i++)
     {
-        runtime_iteration(i, force_armed);
+        runtime_iteration(i, force_armed, &config);
     }
 
     return 0;
 #else
-    return run_interrupt_loop(force_armed);
+    return run_interrupt_loop(force_armed, &config);
 #endif
 }
+#endif
