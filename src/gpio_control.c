@@ -89,6 +89,19 @@ int gpio_set_output_value(int pin, int value)
 #endif
 }
 
+int gpio_set_edge(int pin, const char *edge)
+{
+#ifdef SIMULATE_GPIO
+    printf("GPIO %d edge %s\n", pin, edge);
+    return 0;
+#else
+    char path[GPIO_PATH_MAX];
+
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/edge", pin);
+    return write_text_file(path, edge);
+#endif
+}
+
 int gpio_write_value(int pin, int value)
 {
     int normalized_value = value ? 1 : 0;
