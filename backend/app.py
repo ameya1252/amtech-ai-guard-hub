@@ -253,8 +253,8 @@ def parse_alert(payload):
     if not shop_id:
         raise ValueError("shop_id is required")
 
-    if event_type not in ("intrusion", "shutter", "test"):
-        raise ValueError("event_type must be one of intrusion, shutter, test")
+    if event_type not in ("intrusion", "shutter", "panic", "test"):
+        raise ValueError("event_type must be one of intrusion, shutter, panic, test")
 
     if not timestamp:
         timestamp = datetime.now(timezone.utc).isoformat()

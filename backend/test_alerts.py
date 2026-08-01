@@ -23,6 +23,7 @@ def main():
     send_alert("amtech-demo-shop", "test")
     send_alert("amtech-demo-shop", "intrusion")
     send_alert("amtech-demo-shop", "shutter")
+    send_alert("amtech-demo-shop", "panic")
 
     response = requests.get(ALERT_HISTORY_URL, timeout=5)
     print(f"GET {ALERT_HISTORY_URL}")
