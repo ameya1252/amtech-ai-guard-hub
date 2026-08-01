@@ -74,6 +74,21 @@ int gpio_set_output(int pin)
 #endif
 }
 
+int gpio_set_output_value(int pin, int value)
+{
+    int normalized_value = value ? 1 : 0;
+
+#ifdef SIMULATE_GPIO
+    printf("GPIO %d direction output initial %d\n", pin, normalized_value);
+    return 0;
+#else
+    char path[GPIO_PATH_MAX];
+
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", pin);
+    return write_text_file(path, normalized_value ? "high" : "low");
+#endif
+}
+
 int gpio_write_value(int pin, int value)
 {
     int normalized_value = value ? 1 : 0;

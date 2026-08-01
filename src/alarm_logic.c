@@ -33,13 +33,11 @@ void alarm_logic_init(int gpio_pin)
         return;
     }
 
-    if (gpio_set_output(alarm_gpio_pin) != 0)
+    if (gpio_set_output_value(alarm_gpio_pin, 1) != 0)
     {
-        printf("Alarm: failed to set GPIO %d as output\n", alarm_gpio_pin);
+        printf("Alarm: failed to set GPIO %d as output HIGH\n", alarm_gpio_pin);
         return;
     }
-
-    gpio_write_value(alarm_gpio_pin, 1);
 }
 
 void alarm_logic_set_shop_id(const char *shop_id)
