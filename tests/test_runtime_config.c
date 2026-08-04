@@ -1,5 +1,8 @@
 #include "config.h"
+#include "alarm_logic.h"
+#include "gpio_control.h"
 #include "runtime_loop.h"
+#include "sensor_input.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +42,36 @@ static void check_pin_present(runtime_watched_pin_t pins[], int count, int pin, 
 
     snprintf(label, sizeof(label), "pin %d watched", pin);
     check_int(label, contains_pin(pins, count, pin), expected);
+}
+
+static void check_shutter2_ignored_when_single_shutter(void)
+{
+    amtech_config_t config;
+
+    config.shutter_count = 1;
+    config.panic_enabled = 1;
+
+    gpio_reset_simulated_values();
+    alarm_logic_init(42);
+    alarm_logic_set_armed(1);
+
+    sensor_input_set_simulated_raw_value(33, 0);
+    sensor_input_set_simulated_raw_value(40, 1);
+    sensor_input_set_simulated_raw_value(41, 1);
+    sensor_input_set_simulated_raw_value(72, 0);
+
+    check_int("process configured shutters with SHUTTER_COUNT=1",
+              runtime_process_configured_shutters(&config),
+              0);
+    check_int("Shutter-2 raw OPEN ignored when SHUTTER_COUNT=1",
+              alarm_logic_is_triggered(),
+              0);
+    check_int("siren remains OFF/HIGH when Shutter-2 ignored",
+              gpio_get_simulated_value(42),
+              1);
+    check_int("strobe remains OFF/HIGH when Shutter-2 ignored",
+              gpio_get_simulated_value(48),
+              1);
 }
 
 int main(void)
@@ -107,6 +140,8 @@ int main(void)
 
     check_int("PANIC_ENABLED=0 watched pin count", count, 4);
     check_pin_present(pins, count, 32, 0);
+
+    check_shutter2_ignored_when_single_shutter();
 
     if (failures == 0)
     {

@@ -27,6 +27,7 @@
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_SENSOR_DEBOUNCE_MS 25
+#define AMTECH_GPIO_POLL_TIMEOUT_MS 100
 
 typedef enum
 {
@@ -141,6 +142,27 @@ int runtime_build_watched_pins(const amtech_config_t *config,
     }
 
     return count;
+}
+
+int runtime_process_configured_shutters(const amtech_config_t *config)
+{
+    shutter_state_t shutter_state;
+
+    if (config == NULL)
+    {
+        return -1;
+    }
+
+    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
+    alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-1", "shutter-1");
+
+    if (config->shutter_count >= 2)
+    {
+        shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
+        alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-2", "shutter-2");
+    }
+
+    return 0;
 }
 
 static int env_force_armed_enabled(void)
@@ -415,7 +437,7 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
             update_schedule_from_realtime();
         }
 
-        ready = poll(poll_fds, watch_count, 1000);
+        ready = poll(poll_fds, watch_count, AMTECH_GPIO_POLL_TIMEOUT_MS);
         if (ready < 0)
         {
             if (errno == EINTR)
@@ -450,7 +472,6 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
 #ifdef SIMULATE_GPIO
 static void runtime_iteration(int iteration, int force_armed, const amtech_config_t *config)
 {
-    shutter_state_t shutter_state;
     int panic_triggered;
     int should_be_armed;
 
@@ -472,14 +493,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         sensor_input_set_simulated_raw_value(AMTECH_SHUTTER2_NO_GPIO_PIN, iteration == 5 ? 0 : 1);
     }
 
-    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
-    alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-1", "shutter-1");
-
-    if (config->shutter_count >= 2)
-    {
-        shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
-        alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-2", "shutter-2");
-    }
+    runtime_process_configured_shutters(config);
 
     sensor_input_simulated_state = iteration == 6 ? 0 : 1;
 

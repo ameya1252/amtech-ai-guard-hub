@@ -18,6 +18,7 @@ typedef struct
 int runtime_build_watched_pins(const amtech_config_t *config,
                                runtime_watched_pin_t watched_pins[],
                                int max_watched_pins);
+int runtime_process_configured_shutters(const amtech_config_t *config);
 
 #ifdef __cplusplus
 }
