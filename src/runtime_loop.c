@@ -374,6 +374,7 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
     gpio_watch_t watches[AMTECH_RUNTIME_MAX_WATCHED_PINS];
     struct pollfd poll_fds[AMTECH_RUNTIME_MAX_WATCHED_PINS];
     long long last_schedule_tick_ms = 0;
+    long long last_alarm_tick_ms = 0;
     int watch_count;
     int i;
 
@@ -399,6 +400,14 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
     for (;;)
     {
         int ready;
+        long long now_ms;
+
+        now_ms = monotonic_ms();
+        if (last_alarm_tick_ms != 0 && now_ms >= last_alarm_tick_ms)
+        {
+            alarm_logic_tick((unsigned int)(now_ms - last_alarm_tick_ms));
+        }
+        last_alarm_tick_ms = now_ms;
 
         if (!force_armed)
         {
@@ -485,6 +494,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
      * alarm_logic_handle_detection(), then call alarm_logic_end_frame().
      */
     alarm_logic_end_frame();
+    alarm_logic_tick(1000);
 }
 #endif
 

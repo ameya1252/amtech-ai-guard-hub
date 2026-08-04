@@ -14,6 +14,8 @@
 
 static int alarm_gpio_pin = -1;
 static int strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
+static int siren_active = 0;
+static unsigned int siren_elapsed_ms = 0;
 static int armed = 0;
 static int consecutive_person_frames = 0;
 static int person_seen_this_frame = 0;
@@ -42,6 +44,8 @@ void alarm_logic_init(int gpio_pin)
 {
     alarm_gpio_pin = gpio_pin;
     strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
+    siren_active = 0;
+    siren_elapsed_ms = 0;
     armed = 0;
     consecutive_person_frames = 0;
     person_seen_this_frame = 0;
@@ -107,6 +111,8 @@ void trigger_alarm(void)
     if (alarm_gpio_pin >= 0)
     {
         gpio_write_value(alarm_gpio_pin, 0);
+        siren_active = 1;
+        siren_elapsed_ms = 0;
     }
 
     if (strobe_gpio_pin >= 0)
@@ -120,6 +126,8 @@ void trigger_alarm(void)
 void alarm_logic_reset(void)
 {
     alarm_triggered = 0;
+    siren_active = 0;
+    siren_elapsed_ms = 0;
     consecutive_person_frames = 0;
     person_seen_this_frame = 0;
     pending_alarm_event_type = "intrusion";
@@ -135,6 +143,33 @@ void alarm_logic_reset(void)
     }
 
     printf("Alarm: reset\n");
+}
+
+void alarm_logic_tick(unsigned int elapsed_ms)
+{
+    if (!alarm_triggered || !siren_active || elapsed_ms == 0)
+    {
+        return;
+    }
+
+    if (elapsed_ms > AMTECH_SIREN_DURATION_MS - siren_elapsed_ms)
+    {
+        siren_elapsed_ms = AMTECH_SIREN_DURATION_MS;
+    }
+    else
+    {
+        siren_elapsed_ms += elapsed_ms;
+    }
+
+    if (siren_elapsed_ms >= AMTECH_SIREN_DURATION_MS)
+    {
+        if (alarm_gpio_pin >= 0)
+        {
+            gpio_write_value(alarm_gpio_pin, 1);
+        }
+        siren_active = 0;
+        printf("Alarm: siren auto-stopped after %u ms\n", AMTECH_SIREN_DURATION_MS);
+    }
 }
 
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence)

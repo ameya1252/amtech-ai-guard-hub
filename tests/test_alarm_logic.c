@@ -51,6 +51,22 @@ int main(void)
     check_int("strobe turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
 
+    alarm_logic_tick(AMTECH_SIREN_DURATION_MS - 1);
+
+    check_int("alarm remains triggered before siren timeout", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("siren remains ON/LOW before timeout", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
+    check_int("strobe remains ON/LOW before siren timeout", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+
+    alarm_logic_tick(2);
+
+    check_int("alarm remains triggered after siren timeout", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("siren turns OFF/HIGH after timeout", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
+    check_int("strobe remains ON/LOW after siren timeout", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+
     alarm_logic_reset();
 
     check_int("alarm reset clears triggered state", alarm_logic_is_triggered(), 0);

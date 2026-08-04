@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+#define AMTECH_SIREN_DURATION_MS 5000U
+
 void alarm_logic_init(int gpio_pin);
 void alarm_logic_set_shop_id(const char *shop_id);
 void alarm_logic_set_armed(int armed);
@@ -14,6 +16,7 @@ void alarm_logic_toggle_armed(void);
 int alarm_logic_is_armed(void);
 int alarm_logic_is_triggered(void);
 void alarm_logic_reset(void);
+void alarm_logic_tick(unsigned int elapsed_ms);
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence);
 void alarm_logic_handle_shutter_sensor(int triggered);
 void alarm_logic_handle_shutter_dual(shutter_state_t state);
