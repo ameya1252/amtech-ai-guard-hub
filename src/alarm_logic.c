@@ -10,8 +10,10 @@
 #define PERSON_CONFIDENCE_THRESHOLD 0.6f
 #define REQUIRED_CONSECUTIVE_FRAMES 3
 #define SHOP_ID_MAX_SIZE 64
+#define AMTECH_STROBE_GPIO_PIN 48
 
 static int alarm_gpio_pin = -1;
+static int strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
 static int armed = 0;
 static int consecutive_person_frames = 0;
 static int person_seen_this_frame = 0;
@@ -19,23 +21,39 @@ static int alarm_triggered = 0;
 static char alarm_shop_id[SHOP_ID_MAX_SIZE] = "amtech-demo-shop";
 static const char *pending_alarm_event_type = "intrusion";
 
+static int init_alarm_output_off(int gpio_pin, const char *name)
+{
+    if (gpio_export(gpio_pin) != 0)
+    {
+        printf("Alarm: failed to export %s GPIO %d\n", name, gpio_pin);
+        return -1;
+    }
+
+    if (gpio_set_output_value(gpio_pin, 1) != 0)
+    {
+        printf("Alarm: failed to set %s GPIO %d as output HIGH\n", name, gpio_pin);
+        return -1;
+    }
+
+    return 0;
+}
+
 void alarm_logic_init(int gpio_pin)
 {
     alarm_gpio_pin = gpio_pin;
+    strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
     armed = 0;
     consecutive_person_frames = 0;
     person_seen_this_frame = 0;
     alarm_triggered = 0;
 
-    if (gpio_export(alarm_gpio_pin) != 0)
+    if (init_alarm_output_off(alarm_gpio_pin, "siren") != 0)
     {
-        printf("Alarm: failed to export GPIO %d\n", alarm_gpio_pin);
         return;
     }
 
-    if (gpio_set_output_value(alarm_gpio_pin, 1) != 0)
+    if (init_alarm_output_off(strobe_gpio_pin, "strobe") != 0)
     {
-        printf("Alarm: failed to set GPIO %d as output HIGH\n", alarm_gpio_pin);
         return;
     }
 }
@@ -91,7 +109,32 @@ void trigger_alarm(void)
         gpio_write_value(alarm_gpio_pin, 0);
     }
 
+    if (strobe_gpio_pin >= 0)
+    {
+        gpio_write_value(strobe_gpio_pin, 0);
+    }
+
     notify_send_alert(alarm_shop_id, pending_alarm_event_type);
+}
+
+void alarm_logic_reset(void)
+{
+    alarm_triggered = 0;
+    consecutive_person_frames = 0;
+    person_seen_this_frame = 0;
+    pending_alarm_event_type = "intrusion";
+
+    if (alarm_gpio_pin >= 0)
+    {
+        gpio_write_value(alarm_gpio_pin, 1);
+    }
+
+    if (strobe_gpio_pin >= 0)
+    {
+        gpio_write_value(strobe_gpio_pin, 1);
+    }
+
+    printf("Alarm: reset\n");
 }
 
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence)

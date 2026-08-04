@@ -10,6 +10,22 @@
 
 #define GPIO_PATH_MAX 128
 
+#ifdef SIMULATE_GPIO
+#define SIMULATED_GPIO_MAX 256
+
+static int simulated_gpio_values[SIMULATED_GPIO_MAX];
+static int simulated_gpio_known[SIMULATED_GPIO_MAX];
+
+static void remember_simulated_gpio_value(int pin, int value)
+{
+    if (pin >= 0 && pin < SIMULATED_GPIO_MAX)
+    {
+        simulated_gpio_values[pin] = value ? 1 : 0;
+        simulated_gpio_known[pin] = 1;
+    }
+}
+#endif
+
 static int write_text_file(const char *path, const char *value)
 {
 #ifdef SIMULATE_GPIO
@@ -80,6 +96,7 @@ int gpio_set_output_value(int pin, int value)
 
 #ifdef SIMULATE_GPIO
     printf("GPIO %d direction output initial %d\n", pin, normalized_value);
+    remember_simulated_gpio_value(pin, normalized_value);
     return 0;
 #else
     char path[GPIO_PATH_MAX];
@@ -108,6 +125,7 @@ int gpio_write_value(int pin, int value)
 
 #ifdef SIMULATE_GPIO
     printf("GPIO %d set %d\n", pin, normalized_value);
+    remember_simulated_gpio_value(pin, normalized_value);
     return 0;
 #else
     char path[GPIO_PATH_MAX];
@@ -116,3 +134,26 @@ int gpio_write_value(int pin, int value)
     return write_text_file(path, normalized_value ? "1" : "0");
 #endif
 }
+
+#ifdef SIMULATE_GPIO
+int gpio_get_simulated_value(int pin)
+{
+    if (pin < 0 || pin >= SIMULATED_GPIO_MAX || !simulated_gpio_known[pin])
+    {
+        return -1;
+    }
+
+    return simulated_gpio_values[pin];
+}
+
+void gpio_reset_simulated_values(void)
+{
+    int i;
+
+    for (i = 0; i < SIMULATED_GPIO_MAX; i++)
+    {
+        simulated_gpio_values[i] = 0;
+        simulated_gpio_known[i] = 0;
+    }
+}
+#endif
