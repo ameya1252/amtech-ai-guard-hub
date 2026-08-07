@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef SIMULATE_MODEM
@@ -21,6 +22,15 @@
 #ifdef SIMULATE_MODEM
 static const char *simulated_response_for_command(const char *command)
 {
+    const char *fail_command = getenv("AMTECH_SIM_MODEM_FAIL_COMMAND");
+    const char *operator_name = getenv("AMTECH_SIM_MODEM_OPERATOR");
+    static char cops_response[128];
+
+    if (fail_command != NULL && strcmp(command, fail_command) == 0)
+    {
+        return "\r\nERROR\r\n";
+    }
+
     if (strcmp(command, "AT+CSQ") == 0)
     {
         return "\r\n+CSQ: 20,99\r\n\r\nOK\r\n";
@@ -29,6 +39,30 @@ static const char *simulated_response_for_command(const char *command)
     if (strcmp(command, "AT+CREG?") == 0)
     {
         return "\r\n+CREG: 0,1\r\n\r\nOK\r\n";
+    }
+
+    if (strcmp(command, "AT+CPIN?") == 0)
+    {
+        return "\r\n+CPIN: READY\r\n\r\nOK\r\n";
+    }
+
+    if (strcmp(command, "AT+CEREG?") == 0)
+    {
+        return "\r\n+CEREG: 0,1\r\n\r\nOK\r\n";
+    }
+
+    if (strcmp(command, "AT+COPS?") == 0)
+    {
+        if (operator_name == NULL || operator_name[0] == '\0')
+        {
+            operator_name = "Airtel";
+        }
+
+        snprintf(cops_response,
+                 sizeof(cops_response),
+                 "\r\n+COPS: 0,0,\"%s\",7\r\n\r\nOK\r\n",
+                 operator_name);
+        return cops_response;
     }
 
     if (strcmp(command, "AT+CGPADDR=1") == 0)
@@ -123,6 +157,18 @@ static int apn_is_safe(const char *apn)
     return 1;
 }
 
+static int pdp_type_is_safe(const char *pdp_type)
+{
+    if (pdp_type == NULL)
+    {
+        return 0;
+    }
+
+    return strcmp(pdp_type, "IP") == 0 ||
+           strcmp(pdp_type, "IPV6") == 0 ||
+           strcmp(pdp_type, "IPV4V6") == 0;
+}
+
 static int send_expect_ok(const char *command, int timeout_ms)
 {
     char response[SIM_MODEM_RESPONSE_MAX];
@@ -141,6 +187,20 @@ static int send_expect_ok(const char *command, int timeout_ms)
     }
 
     return 0;
+}
+
+int sim_modem_configure_pdp_context(int context_id, const char *pdp_type, const char *apn)
+{
+    char command[SIM_MODEM_COMMAND_MAX];
+
+    if (context_id <= 0 || !pdp_type_is_safe(pdp_type) || !apn_is_safe(apn))
+    {
+        printf("SIM modem: invalid PDP context configuration\n");
+        return -1;
+    }
+
+    snprintf(command, sizeof(command), "AT+CGDCONT=%d,\"%s\",\"%s\"", context_id, pdp_type, apn);
+    return send_expect_ok(command, SIM_MODEM_TIMEOUT_SHORT_MS);
 }
 
 static int extract_ip_from_cgpaddr(const char *response, char *ip_buffer, size_t buffer_size)
@@ -318,21 +378,21 @@ int sim_modem_send_at(const char *command,
 #endif
 }
 
-int sim_modem_connect_data(const char *apn)
+int sim_modem_connect_data_profile(const char *apn, const char *pdp_type)
 {
     char command[SIM_MODEM_COMMAND_MAX];
     char ip_address[64];
 
-    if (!apn_is_safe(apn))
+    if (!apn_is_safe(apn) || !pdp_type_is_safe(pdp_type))
     {
-        printf("SIM modem: invalid APN\n");
+        printf("SIM modem: invalid APN or PDP type\n");
         return -1;
     }
 
     /*
      * Standard 3GPP/SIMCom SIM767XX packet-domain sequence:
      * - AT+CGATT=1 attaches to packet service.
-     * - AT+CGDCONT defines PDP context 1 as IPv4 with the caller-supplied APN.
+     * - AT+CGDCONT defines PDP context 1 with the caller-supplied PDP type/APN.
      * - AT+CGACT=1,1 activates PDP context 1.
      * - AT+CGPADDR=1 confirms an assigned address.
      *
@@ -349,8 +409,7 @@ int sim_modem_connect_data(const char *apn)
         return -1;
     }
 
-    snprintf(command, sizeof(command), "AT+CGDCONT=%d,\"IP\",\"%s\"", SIM_MODEM_CONTEXT_ID, apn);
-    if (send_expect_ok(command, SIM_MODEM_TIMEOUT_SHORT_MS) != 0)
+    if (sim_modem_configure_pdp_context(SIM_MODEM_CONTEXT_ID, pdp_type, apn) != 0)
     {
         return -1;
     }
@@ -368,6 +427,11 @@ int sim_modem_connect_data(const char *apn)
 
     printf("SIM modem: data context active, IP=%s\n", ip_address);
     return 0;
+}
+
+int sim_modem_connect_data(const char *apn)
+{
+    return sim_modem_connect_data_profile(apn, "IP");
 }
 
 int sim_modem_get_ip(char *ip_buffer, size_t buffer_size)

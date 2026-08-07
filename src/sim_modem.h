@@ -15,6 +15,8 @@ int sim_modem_send_at(const char *command,
                       size_t buffer_size,
                       int timeout_ms);
 int sim_modem_connect_data(const char *apn);
+int sim_modem_connect_data_profile(const char *apn, const char *pdp_type);
+int sim_modem_configure_pdp_context(int context_id, const char *pdp_type, const char *apn);
 int sim_modem_get_ip(char *ip_buffer, size_t buffer_size);
 
 #ifdef __cplusplus
