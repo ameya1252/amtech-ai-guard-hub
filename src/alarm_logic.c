@@ -42,6 +42,21 @@ static int init_alarm_output_off(int gpio_pin, const char *name)
     return 0;
 }
 
+static void reactivate_alarm_outputs(void)
+{
+    if (alarm_gpio_pin >= 0)
+    {
+        gpio_write_value(alarm_gpio_pin, 0);
+        siren_active = 1;
+        siren_elapsed_ms = 0;
+    }
+
+    if (strobe_gpio_pin >= 0)
+    {
+        gpio_write_value(strobe_gpio_pin, 0);
+    }
+}
+
 void alarm_logic_init(int gpio_pin)
 {
     alarm_gpio_pin = gpio_pin;
@@ -111,17 +126,7 @@ void trigger_alarm(void)
     alarm_triggered = 1;
     printf("Alarm: triggered\n");
 
-    if (alarm_gpio_pin >= 0)
-    {
-        gpio_write_value(alarm_gpio_pin, 0);
-        siren_active = 1;
-        siren_elapsed_ms = 0;
-    }
-
-    if (strobe_gpio_pin >= 0)
-    {
-        gpio_write_value(strobe_gpio_pin, 0);
-    }
+    reactivate_alarm_outputs();
 
     if (should_send_notification)
     {

@@ -89,6 +89,49 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #endif
 }
 
+static void check_outputs_reactivate_when_notification_is_suppressed(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_shop_id("amtech-demo-shop");
+    alarm_logic_set_armed(0);
+
+    alarm_logic_handle_panic(1);
+#ifdef SIMULATE_NETWORK
+    check_int("regression first panic sends notification",
+              notify_get_simulated_send_count(),
+              1);
+#endif
+
+    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+#ifdef SIMULATE_GPIO
+    check_int("regression siren is OFF before second panic",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              1);
+#endif
+
+    alarm_logic_handle_panic(1);
+#ifdef SIMULATE_GPIO
+    check_int("regression siren restarts even when notification suppressed",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              0);
+    check_int("regression strobe remains ON even when notification suppressed",
+              gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
+              0);
+#endif
+#ifdef SIMULATE_NETWORK
+    check_int("regression second panic suppresses notification only",
+              notify_get_simulated_send_count(),
+              1);
+#endif
+}
+
 static void check_shutter_retrigger(void)
 {
 #ifdef SIMULATE_GPIO
@@ -313,6 +356,7 @@ int main(void)
     check_int("panic button while armed triggers immediately", alarm_logic_is_triggered(), 1);
 
     check_panic_retrigger_and_notification_cooldown();
+    check_outputs_reactivate_when_notification_is_suppressed();
     check_shutter_retrigger();
     check_person_retrigger();
 
