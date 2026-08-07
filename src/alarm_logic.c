@@ -16,6 +16,8 @@ static int alarm_gpio_pin = -1;
 static int strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
 static int siren_active = 0;
 static unsigned int siren_elapsed_ms = 0;
+static int notification_sent_this_incident = 0;
+static unsigned int notification_elapsed_ms = 0;
 static int armed = 0;
 static int consecutive_person_frames = 0;
 static int person_seen_this_frame = 0;
@@ -46,6 +48,8 @@ void alarm_logic_init(int gpio_pin)
     strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
     siren_active = 0;
     siren_elapsed_ms = 0;
+    notification_sent_this_incident = 0;
+    notification_elapsed_ms = 0;
     armed = 0;
     consecutive_person_frames = 0;
     person_seen_this_frame = 0;
@@ -100,11 +104,10 @@ int alarm_logic_is_triggered(void)
 
 void trigger_alarm(void)
 {
-    if (alarm_triggered)
-    {
-        return;
-    }
+    int should_send_notification;
 
+    should_send_notification = !notification_sent_this_incident ||
+                               notification_elapsed_ms >= AMTECH_NOTIFICATION_COOLDOWN_MS;
     alarm_triggered = 1;
     printf("Alarm: triggered\n");
 
@@ -120,7 +123,16 @@ void trigger_alarm(void)
         gpio_write_value(strobe_gpio_pin, 0);
     }
 
-    notify_send_alert(alarm_shop_id, pending_alarm_event_type);
+    if (should_send_notification)
+    {
+        notify_send_alert(alarm_shop_id, pending_alarm_event_type);
+        notification_sent_this_incident = 1;
+        notification_elapsed_ms = 0;
+    }
+    else
+    {
+        printf("Alarm: notification suppressed by cooldown\n");
+    }
 }
 
 void alarm_logic_reset(void)
@@ -128,6 +140,8 @@ void alarm_logic_reset(void)
     alarm_triggered = 0;
     siren_active = 0;
     siren_elapsed_ms = 0;
+    notification_sent_this_incident = 0;
+    notification_elapsed_ms = 0;
     consecutive_person_frames = 0;
     person_seen_this_frame = 0;
     pending_alarm_event_type = "intrusion";
@@ -147,28 +161,45 @@ void alarm_logic_reset(void)
 
 void alarm_logic_tick(unsigned int elapsed_ms)
 {
-    if (!alarm_triggered || !siren_active || elapsed_ms == 0)
+    if (elapsed_ms == 0)
     {
         return;
     }
 
-    if (elapsed_ms > AMTECH_SIREN_DURATION_MS - siren_elapsed_ms)
+    if (alarm_triggered &&
+        notification_sent_this_incident &&
+        notification_elapsed_ms < AMTECH_NOTIFICATION_COOLDOWN_MS)
     {
-        siren_elapsed_ms = AMTECH_SIREN_DURATION_MS;
-    }
-    else
-    {
-        siren_elapsed_ms += elapsed_ms;
+        if (elapsed_ms > AMTECH_NOTIFICATION_COOLDOWN_MS - notification_elapsed_ms)
+        {
+            notification_elapsed_ms = AMTECH_NOTIFICATION_COOLDOWN_MS;
+        }
+        else
+        {
+            notification_elapsed_ms += elapsed_ms;
+        }
     }
 
-    if (siren_elapsed_ms >= AMTECH_SIREN_DURATION_MS)
+    if (alarm_triggered && siren_active)
     {
-        if (alarm_gpio_pin >= 0)
+        if (elapsed_ms > AMTECH_SIREN_DURATION_MS - siren_elapsed_ms)
         {
-            gpio_write_value(alarm_gpio_pin, 1);
+            siren_elapsed_ms = AMTECH_SIREN_DURATION_MS;
         }
-        siren_active = 0;
-        printf("Alarm: siren auto-stopped after %u ms\n", AMTECH_SIREN_DURATION_MS);
+        else
+        {
+            siren_elapsed_ms += elapsed_ms;
+        }
+
+        if (siren_elapsed_ms >= AMTECH_SIREN_DURATION_MS)
+        {
+            if (alarm_gpio_pin >= 0)
+            {
+                gpio_write_value(alarm_gpio_pin, 1);
+            }
+            siren_active = 0;
+            printf("Alarm: siren auto-stopped after %u ms\n", AMTECH_SIREN_DURATION_MS);
+        }
     }
 }
 

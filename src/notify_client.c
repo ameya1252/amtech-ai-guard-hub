@@ -15,6 +15,10 @@
 
 #define NOTIFY_RESPONSE_MAX_SIZE 4096
 
+#if defined(SIMULATE_NETWORK)
+static int simulated_send_count = 0;
+#endif
+
 #if !defined(SIMULATE_NETWORK)
 typedef struct {
     char data[NOTIFY_RESPONSE_MAX_SIZE];
@@ -98,6 +102,7 @@ int notify_send_alert(const char *shop_id, const char *event_type)
 
 #if defined(SIMULATE_NETWORK)
     printf("Notify: would POST %s to %s\n", payload, backend_url());
+    simulated_send_count++;
     return 0;
 #else
     CURL *curl;
@@ -152,3 +157,15 @@ int notify_send_alert(const char *shop_id, const char *event_type)
     return 0;
 #endif
 }
+
+#if defined(SIMULATE_NETWORK)
+int notify_get_simulated_send_count(void)
+{
+    return simulated_send_count;
+}
+
+void notify_reset_simulated_send_count(void)
+{
+    simulated_send_count = 0;
+}
+#endif

@@ -1,5 +1,6 @@
 #include "alarm_logic.h"
 #include "gpio_control.h"
+#include "notify_client.h"
 
 #include <stdio.h>
 
@@ -20,10 +21,167 @@ static void check_int(const char *label, int actual, int expected)
     }
 }
 
+static void check_panic_retrigger_and_notification_cooldown(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_shop_id("amtech-demo-shop");
+    alarm_logic_set_armed(0);
+
+    alarm_logic_handle_panic(1);
+    check_int("panic first trigger sets active alarm", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("panic first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
+    check_int("panic first trigger turns strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+#ifdef SIMULATE_NETWORK
+    check_int("panic first trigger sends notification", notify_get_simulated_send_count(), 1);
+#endif
+
+    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+#ifdef SIMULATE_GPIO
+    check_int("panic first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
+    check_int("panic first trigger strobe stays ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+
+    alarm_logic_handle_panic(1);
+    check_int("panic second trigger keeps alarm active", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("panic second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
+    check_int("panic second trigger keeps strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+#ifdef SIMULATE_NETWORK
+    check_int("panic second trigger inside cooldown suppresses notification",
+              notify_get_simulated_send_count(),
+              1);
+#endif
+
+    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+#ifdef SIMULATE_GPIO
+    check_int("panic second trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
+#endif
+
+    alarm_logic_tick(AMTECH_NOTIFICATION_COOLDOWN_MS);
+    alarm_logic_handle_panic(1);
+#ifdef SIMULATE_GPIO
+    check_int("panic trigger after cooldown restarts siren ON/LOW",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              0);
+#endif
+#ifdef SIMULATE_NETWORK
+    check_int("panic trigger after cooldown sends notification",
+              notify_get_simulated_send_count(),
+              2);
+#endif
+
+    alarm_logic_reset();
+    alarm_logic_handle_panic(1);
+#ifdef SIMULATE_NETWORK
+    check_int("reset clears notification cooldown",
+              notify_get_simulated_send_count(),
+              3);
+#endif
+}
+
+static void check_shutter_retrigger(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+
+    alarm_logic_handle_shutter_dual(SHUTTER_OPEN);
+    check_int("shutter first trigger sets active alarm", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("shutter first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
+    check_int("shutter first trigger turns strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+
+    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+#ifdef SIMULATE_GPIO
+    check_int("shutter first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
+    check_int("shutter first trigger strobe stays ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+
+    alarm_logic_handle_shutter_dual(SHUTTER_OPEN);
+#ifdef SIMULATE_GPIO
+    check_int("shutter second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
+    check_int("shutter second trigger keeps strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
+#endif
+#ifdef SIMULATE_NETWORK
+    check_int("shutter second trigger inside cooldown suppresses notification",
+              notify_get_simulated_send_count(),
+              1);
+#endif
+}
+
+static void send_three_person_frames(void)
+{
+    alarm_logic_handle_detection(0, "person", 0.80f);
+    alarm_logic_end_frame();
+    alarm_logic_handle_detection(0, "person", 0.81f);
+    alarm_logic_end_frame();
+    alarm_logic_handle_detection(0, "person", 0.82f);
+    alarm_logic_end_frame();
+}
+
+static void check_person_retrigger(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+
+    send_three_person_frames();
+    check_int("person first 3-frame trigger sets active alarm", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("person first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
+#endif
+
+    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+#ifdef SIMULATE_GPIO
+    check_int("person first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
+#endif
+
+    send_three_person_frames();
+#ifdef SIMULATE_GPIO
+    check_int("person second 3-frame trigger restarts siren ON/LOW",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              0);
+    check_int("person second 3-frame trigger keeps strobe ON/LOW",
+              gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
+              0);
+#endif
+#ifdef SIMULATE_NETWORK
+    check_int("person second trigger inside cooldown suppresses notification",
+              notify_get_simulated_send_count(),
+              1);
+#endif
+}
+
 int main(void)
 {
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
 #endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
@@ -153,6 +311,10 @@ int main(void)
     alarm_logic_handle_panic(1);
 
     check_int("panic button while armed triggers immediately", alarm_logic_is_triggered(), 1);
+
+    check_panic_retrigger_and_notification_cooldown();
+    check_shutter_retrigger();
+    check_person_retrigger();
 
     if (failures == 0)
     {
