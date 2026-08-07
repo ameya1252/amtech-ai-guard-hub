@@ -36,12 +36,40 @@ static int contains_pin(runtime_watched_pin_t pins[], int count, int pin)
     return 0;
 }
 
+static const char *edge_for_pin(runtime_watched_pin_t pins[], int count, int pin)
+{
+    int i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (pins[i].pin == pin)
+        {
+            return pins[i].edge;
+        }
+    }
+
+    return "";
+}
+
 static void check_pin_present(runtime_watched_pin_t pins[], int count, int pin, int expected)
 {
     char label[64];
 
     snprintf(label, sizeof(label), "pin %d watched", pin);
     check_int(label, contains_pin(pins, count, pin), expected);
+}
+
+static void check_pin_edge(runtime_watched_pin_t pins[],
+                           int count,
+                           int pin,
+                           const char *expected_edge)
+{
+    const char *actual_edge = edge_for_pin(pins, count, pin);
+    int matches = strcmp(actual_edge, expected_edge) == 0;
+    char label[80];
+
+    snprintf(label, sizeof(label), "pin %d edge %s", pin, expected_edge);
+    check_int(label, matches, 1);
 }
 
 static void check_shutter2_ignored_when_single_shutter(void)
@@ -71,6 +99,29 @@ static void check_shutter2_ignored_when_single_shutter(void)
               1);
     check_int("strobe remains OFF/HIGH when Shutter-2 ignored",
               gpio_get_simulated_value(48),
+              1);
+}
+
+static void check_panic_active_high(void)
+{
+    gpio_reset_simulated_values();
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+
+    check_int("panic raw LOW maps to not triggered",
+              runtime_panic_triggered_from_raw(0),
+              0);
+    alarm_logic_handle_panic(runtime_panic_triggered_from_raw(0));
+    check_int("panic raw LOW does not trigger alarm",
+              alarm_logic_is_triggered(),
+              0);
+
+    check_int("panic raw HIGH maps to triggered",
+              runtime_panic_triggered_from_raw(1),
+              1);
+    alarm_logic_handle_panic(runtime_panic_triggered_from_raw(1));
+    check_int("panic raw HIGH triggers alarm",
+              alarm_logic_is_triggered(),
               1);
 }
 
@@ -111,6 +162,7 @@ int main(void)
     check_pin_present(pins, count, 41, 0);
     check_pin_present(pins, count, 72, 0);
     check_pin_present(pins, count, 32, 1);
+    check_pin_edge(pins, count, 32, "rising");
 
     config.shutter_count = 1;
     config.panic_enabled = 1;
@@ -122,6 +174,7 @@ int main(void)
     check_pin_present(pins, count, 41, 0);
     check_pin_present(pins, count, 72, 0);
     check_pin_present(pins, count, 32, 1);
+    check_pin_edge(pins, count, 32, "rising");
 
     config.shutter_count = 2;
     config.panic_enabled = 1;
@@ -133,6 +186,11 @@ int main(void)
     check_pin_present(pins, count, 41, 1);
     check_pin_present(pins, count, 72, 1);
     check_pin_present(pins, count, 32, 1);
+    check_pin_edge(pins, count, 33, "both");
+    check_pin_edge(pins, count, 40, "both");
+    check_pin_edge(pins, count, 41, "both");
+    check_pin_edge(pins, count, 72, "both");
+    check_pin_edge(pins, count, 32, "rising");
 
     config.shutter_count = 2;
     config.panic_enabled = 0;
@@ -142,6 +200,7 @@ int main(void)
     check_pin_present(pins, count, 32, 0);
 
     check_shutter2_ignored_when_single_shutter();
+    check_panic_active_high();
 
     if (failures == 0)
     {

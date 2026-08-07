@@ -65,7 +65,7 @@ static const gpio_watch_t SHUTTER2_NO_WATCH = {
     AMTECH_SHUTTER2_NO_GPIO_PIN, WATCH_SHUTTER2_NO, "shutter-2 NO", "both",
     AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0};
 static const gpio_watch_t PANIC_WATCH = {
-    AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "falling",
+    AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "rising",
     -1, -1, NULL, NULL, -1, 0};
 
 static int add_watch(gpio_watch_t watches[], int max_watches, int *count, const gpio_watch_t *watch)
@@ -139,9 +139,15 @@ int runtime_build_watched_pins(const amtech_config_t *config,
     {
         watched_pins[i].pin = watches[i].pin;
         watched_pins[i].name = watches[i].name;
+        watched_pins[i].edge = watches[i].edge;
     }
 
     return count;
+}
+
+int runtime_panic_triggered_from_raw(int raw_value)
+{
+    return raw_value ? 1 : 0;
 }
 
 int runtime_process_configured_shutters(const amtech_config_t *config)
@@ -376,7 +382,7 @@ static void handle_sensor_event(gpio_watch_t *watch)
 
     if (watch->role == WATCH_PANIC)
     {
-        panic_triggered = raw_value == 0 ? 1 : 0;
+        panic_triggered = runtime_panic_triggered_from_raw(raw_value);
         alarm_logic_handle_panic(panic_triggered);
         return;
     }
@@ -473,6 +479,7 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
 static void runtime_iteration(int iteration, int force_armed, const amtech_config_t *config)
 {
     int panic_triggered;
+    int panic_raw_value;
     int should_be_armed;
 
     printf("Runtime: iteration %d\n", iteration);
@@ -495,11 +502,12 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
 
     runtime_process_configured_shutters(config);
 
-    sensor_input_simulated_state = iteration == 6 ? 0 : 1;
-
     if (config->panic_enabled)
     {
-        panic_triggered = sensor_input_read(AMTECH_PANIC_GPIO_PIN);
+        panic_raw_value = iteration == 6 ? 1 : 0;
+        sensor_input_set_simulated_raw_value(AMTECH_PANIC_GPIO_PIN, panic_raw_value);
+        printf("Runtime: panic GPIO %d raw %d\n", AMTECH_PANIC_GPIO_PIN, panic_raw_value);
+        panic_triggered = runtime_panic_triggered_from_raw(panic_raw_value);
         alarm_logic_handle_panic(panic_triggered);
     }
 
