@@ -1,5 +1,7 @@
 #include "sim_modem.h"
 
+#include "config.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,38 @@
 #define SIM_MODEM_TIMEOUT_SHORT_MS 5000
 #define SIM_MODEM_TIMEOUT_ATTACH_MS 45000
 #define SIM_MODEM_TIMEOUT_ACTIVATE_MS 150000
+
+static const char *sim_modem_config_path(void)
+{
+    const char *path = getenv("AMTECH_CONFIG_PATH");
+
+    if (path != NULL && path[0] != '\0')
+    {
+        return path;
+    }
+
+    return AMTECH_DEFAULT_CONFIG_PATH;
+}
+
+int sim_modem_get_device_path(char *path_buffer, size_t buffer_size)
+{
+    amtech_config_t config;
+
+    if (path_buffer == NULL || buffer_size == 0)
+    {
+        return -1;
+    }
+
+    amtech_config_set_defaults(&config);
+    if (amtech_config_load(sim_modem_config_path(), &config) != 0)
+    {
+        printf("SIM modem: failed to load config, using default MODEM_DEVICE=%s\n",
+               config.modem_device);
+    }
+
+    snprintf(path_buffer, buffer_size, "%s", config.modem_device);
+    return 0;
+}
 
 #ifdef SIMULATE_MODEM
 static const char *simulated_response_for_command(const char *command)
@@ -269,6 +303,7 @@ int sim_modem_send_at(const char *command,
                       size_t buffer_size,
                       int timeout_ms)
 {
+    char device_path[AMTECH_MODEM_DEVICE_MAX];
 #ifndef SIMULATE_MODEM
     char command_line[SIM_MODEM_COMMAND_MAX];
     int fd;
@@ -284,21 +319,26 @@ int sim_modem_send_at(const char *command,
 
     response_buffer[0] = '\0';
 
+    if (sim_modem_get_device_path(device_path, sizeof(device_path)) != 0)
+    {
+        return -1;
+    }
+
 #ifdef SIMULATE_MODEM
-    printf("SIM modem: would send AT command to %s: %s\n", SIM_MODEM_DEFAULT_DEVICE, command);
+    printf("SIM modem: would send AT command to %s: %s\n", device_path, command);
     snprintf(response_buffer, buffer_size, "%s", simulated_response_for_command(command));
     return 0;
 #else
     /*
-     * Hardware spec note: serial handling on /dev/ttyS5 must eventually run
+     * Hardware spec note: serial handling on the configured modem UART must eventually run
      * in an isolated background thread so AT command latency cannot delay the
      * real-time GPIO interrupt loop. This basic blocking helper is intentionally
      * standalone for first bring-up testing only.
      */
-    fd = open(SIM_MODEM_DEFAULT_DEVICE, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    fd = open(device_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd < 0)
     {
-        printf("SIM modem: failed to open %s: %s\n", SIM_MODEM_DEFAULT_DEVICE, strerror(errno));
+        printf("SIM modem: failed to open %s: %s\n", device_path, strerror(errno));
         return -1;
     }
 

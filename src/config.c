@@ -57,6 +57,7 @@ void amtech_config_set_defaults(amtech_config_t *config)
 
     config->shutter_count = 1;
     config->panic_enabled = 1;
+    snprintf(config->modem_device, sizeof(config->modem_device), "%s", AMTECH_DEFAULT_MODEM_DEVICE);
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -76,7 +77,9 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1\n", path);
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 MODEM_DEVICE=%s\n",
+                   path,
+                   config->modem_device);
             return 0;
         }
 
@@ -108,13 +111,13 @@ int amtech_config_load(const char *path, amtech_config_t *config)
         value = trim_whitespace(separator + 1);
         key = trim_whitespace(key);
 
-        if (parse_int_value(key, value, &parsed_value) != 0)
-        {
-            continue;
-        }
-
         if (strcmp(key, "SHUTTER_COUNT") == 0)
         {
+            if (parse_int_value(key, value, &parsed_value) != 0)
+            {
+                continue;
+            }
+
             if (parsed_value < 1 || parsed_value > 2)
             {
                 printf("Config: SHUTTER_COUNT must be 1 or 2, keeping %d\n", config->shutter_count);
@@ -124,7 +127,22 @@ int amtech_config_load(const char *path, amtech_config_t *config)
         }
         else if (strcmp(key, "PANIC_ENABLED") == 0)
         {
+            if (parse_int_value(key, value, &parsed_value) != 0)
+            {
+                continue;
+            }
+
             config->panic_enabled = parsed_value ? 1 : 0;
+        }
+        else if (strcmp(key, "MODEM_DEVICE") == 0)
+        {
+            if (value[0] == '\0' || strlen(value) >= sizeof(config->modem_device))
+            {
+                printf("Config: invalid MODEM_DEVICE, keeping %s\n", config->modem_device);
+                continue;
+            }
+
+            snprintf(config->modem_device, sizeof(config->modem_device), "%s", value);
         }
         else
         {
@@ -141,8 +159,9 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d MODEM_DEVICE=%s\n",
            config->shutter_count,
-           config->panic_enabled);
+           config->panic_enabled,
+           config->modem_device);
     return 0;
 }

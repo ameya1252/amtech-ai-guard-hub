@@ -21,6 +21,18 @@ static void check_int(const char *label, int actual, int expected)
     }
 }
 
+static void check_string(const char *label, const char *actual, const char *expected)
+{
+    int matches = strcmp(actual, expected) == 0;
+    const char *result = matches ? "PASS" : "FAIL";
+
+    printf("%s: got %s, expected %s: %s\n", label, actual, expected, result);
+    if (!matches)
+    {
+        failures++;
+    }
+}
+
 static int contains_pin(runtime_watched_pin_t pins[], int count, int pin)
 {
     int i;
@@ -138,6 +150,7 @@ int main(void)
     check_int("missing config load", amtech_config_load(missing_config_path, &config), 0);
     check_int("missing config default shutter count", config.shutter_count, 1);
     check_int("missing config default panic enabled", config.panic_enabled, 1);
+    check_string("missing config default modem device", config.modem_device, AMTECH_DEFAULT_MODEM_DEVICE);
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -145,12 +158,13 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
     check_int("two-shutter config shutter count", config.shutter_count, 2);
     check_int("two-shutter config panic enabled", config.panic_enabled, 1);
+    check_string("configured modem device", config.modem_device, "/dev/ttyS1");
 
     amtech_config_set_defaults(&config);
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
