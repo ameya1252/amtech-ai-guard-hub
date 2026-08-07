@@ -100,11 +100,11 @@ static void run_until_connected(const char *label)
 
 static void check_jio_operator_path(void)
 {
-    setenv("AMTECH_SIM_MODEM_OPERATOR", "Jio", 1);
+    setenv("AMTECH_SIM_MODEM_OPERATOR", "405864", 1);
     unsetenv("AMTECH_SIM_MODEM_FAIL_COMMAND");
     modem_state_init();
 
-    run_until_connected("Jio operator path reaches connected");
+    run_until_connected("Jio numeric operator path reaches connected");
 
     unsetenv("AMTECH_SIM_MODEM_OPERATOR");
 }

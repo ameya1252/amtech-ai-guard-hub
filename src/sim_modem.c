@@ -89,7 +89,16 @@ static const char *simulated_response_for_command(const char *command)
     {
         if (operator_name == NULL || operator_name[0] == '\0')
         {
-            operator_name = "Airtel";
+            operator_name = "405864";
+        }
+
+        if (strspn(operator_name, "0123456789") == strlen(operator_name))
+        {
+            snprintf(cops_response,
+                     sizeof(cops_response),
+                     "\r\n+COPS: 0,2,\"%s\",7\r\n\r\nOK\r\n",
+                     operator_name);
+            return cops_response;
         }
 
         snprintf(cops_response,

@@ -20,6 +20,7 @@ typedef enum {
 void modem_state_init(void);
 modem_state_t modem_state_get_current(void);
 const char *modem_state_name(modem_state_t state);
+const char *modem_state_operator_name_for_cops_response(const char *response);
 int modem_state_tick(void);
 int modem_state_is_connected(void);
 
