@@ -27,8 +27,7 @@
 #define AMTECH_SMOKE_GPIO_PIN 54
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
-#define AMTECH_SENSOR_DEBOUNCE_MS 25
-#define AMTECH_SMOKE_CONFIRM_MS 200
+#define AMTECH_DEBOUNCE_CONFIRM_MS 200
 #define AMTECH_GPIO_POLL_TIMEOUT_MS 100
 
 typedef enum
@@ -164,7 +163,17 @@ int runtime_panic_triggered_from_raw(int raw_value)
     return raw_value ? 1 : 0;
 }
 
-int runtime_smoke_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value)
+int runtime_active_high_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value)
+{
+    if (initial_raw_value == 0)
+    {
+        return 0;
+    }
+
+    return confirmed_raw_value != 0 ? 1 : 0;
+}
+
+int runtime_active_low_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value)
 {
     if (initial_raw_value != 0)
     {
@@ -172,6 +181,35 @@ int runtime_smoke_confirmed_from_raw_sequence(int initial_raw_value, int confirm
     }
 
     return confirmed_raw_value == 0 ? 1 : 0;
+}
+
+shutter_state_t runtime_confirmed_shutter_state_from_raw_sequence(int initial_nc_raw,
+                                                                  int initial_no_raw,
+                                                                  int confirmed_nc_raw,
+                                                                  int confirmed_no_raw)
+{
+    int nc_triggered;
+    int no_triggered;
+
+    (void)initial_nc_raw;
+    (void)initial_no_raw;
+
+    nc_triggered = confirmed_nc_raw == 0 ? 1 : 0;
+    no_triggered = confirmed_no_raw == 0 ? 1 : 0;
+
+    if (nc_triggered && !no_triggered)
+    {
+        return SHUTTER_CLOSED;
+    }
+    if (!nc_triggered && no_triggered)
+    {
+        return SHUTTER_OPEN;
+    }
+    if (!nc_triggered && !no_triggered)
+    {
+        return SHUTTER_TAMPER;
+    }
+    return SHUTTER_FAULT;
 }
 
 int runtime_process_configured_shutters(const amtech_config_t *config)
@@ -365,31 +403,24 @@ static int setup_gpio_watch(gpio_watch_t *watch)
     return 0;
 }
 
-static int smoke_low_confirmed(gpio_watch_t *watch)
+static int confirm_watch_raw_value(gpio_watch_t *watch, int *confirmed_raw_value)
 {
-    int confirmed_raw_value;
-
-    printf("Runtime: smoke GPIO %d LOW candidate, confirming for %d ms\n",
+    printf("Runtime: %s GPIO %d confirming for %d ms\n",
+           watch->name,
            watch->pin,
-           AMTECH_SMOKE_CONFIRM_MS);
-    usleep(AMTECH_SMOKE_CONFIRM_MS * 1000);
+           AMTECH_DEBOUNCE_CONFIRM_MS);
+    usleep(AMTECH_DEBOUNCE_CONFIRM_MS * 1000);
 
-    if (read_gpio_value_fd(watch->fd, &confirmed_raw_value) != 0)
+    if (read_gpio_value_fd(watch->fd, confirmed_raw_value) != 0)
     {
-        return 0;
+        return -1;
     }
 
-    if (runtime_smoke_confirmed_from_raw_sequence(0, confirmed_raw_value))
-    {
-        printf("Runtime: smoke GPIO %d still LOW after %d ms\n",
-               watch->pin,
-               AMTECH_SMOKE_CONFIRM_MS);
-        return 1;
-    }
-
-    printf("Runtime: ignored smoke GPIO %d brief LOW blip, confirmed raw=%d\n",
+    printf("Runtime: %s GPIO %d confirmed raw=%d after %d ms\n",
+           watch->name,
            watch->pin,
-           confirmed_raw_value);
+           *confirmed_raw_value,
+           AMTECH_DEBOUNCE_CONFIRM_MS);
     return 0;
 }
 
@@ -412,10 +443,11 @@ static void handle_sensor_event(gpio_watch_t *watch)
     long long now_ms = monotonic_ms();
     long long elapsed_ms = now_ms - watch->last_event_ms;
     int raw_value;
+    int confirmed_raw_value;
     int panic_triggered;
     shutter_state_t shutter_state;
 
-    if (watch->last_event_ms != 0 && elapsed_ms >= 0 && elapsed_ms < AMTECH_SENSOR_DEBOUNCE_MS)
+    if (watch->last_event_ms != 0 && elapsed_ms >= 0 && elapsed_ms < AMTECH_DEBOUNCE_CONFIRM_MS)
     {
         printf("Runtime: ignored %s GPIO %d bounce after %lld ms\n",
                watch->name,
@@ -434,7 +466,16 @@ static void handle_sensor_event(gpio_watch_t *watch)
 
     if (watch->role == WATCH_PANIC)
     {
-        panic_triggered = runtime_panic_triggered_from_raw(raw_value);
+        if (confirm_watch_raw_value(watch, &confirmed_raw_value) != 0)
+        {
+            return;
+        }
+
+        panic_triggered = runtime_active_high_confirmed_from_raw_sequence(raw_value, confirmed_raw_value);
+        if (!panic_triggered)
+        {
+            printf("Runtime: ignored panic GPIO %d transient state\n", watch->pin);
+        }
         alarm_logic_handle_panic(panic_triggered);
         return;
     }
@@ -446,10 +487,24 @@ static void handle_sensor_event(gpio_watch_t *watch)
             return;
         }
 
-        if (smoke_low_confirmed(watch))
+        if (confirm_watch_raw_value(watch, &confirmed_raw_value) != 0)
+        {
+            return;
+        }
+
+        if (runtime_active_low_confirmed_from_raw_sequence(raw_value, confirmed_raw_value))
         {
             alarm_logic_handle_smoke(1);
         }
+        else
+        {
+            printf("Runtime: ignored smoke GPIO %d transient LOW blip\n", watch->pin);
+        }
+        return;
+    }
+
+    if (confirm_watch_raw_value(watch, &confirmed_raw_value) != 0)
+    {
         return;
     }
 
@@ -587,8 +642,8 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
                AMTECH_SMOKE_GPIO_PIN,
                smoke_initial_raw,
                smoke_confirmed_raw);
-        alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(smoke_initial_raw,
-                                                                           smoke_confirmed_raw));
+        alarm_logic_handle_smoke(runtime_active_low_confirmed_from_raw_sequence(smoke_initial_raw,
+                                                                                smoke_confirmed_raw));
     }
 
     /*

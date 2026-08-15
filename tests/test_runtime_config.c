@@ -33,6 +33,21 @@ static void check_string(const char *label, const char *actual, const char *expe
     }
 }
 
+static void check_shutter_state(const char *label, shutter_state_t actual, shutter_state_t expected)
+{
+    const char *result = actual == expected ? "PASS" : "FAIL";
+
+    printf("%s: got %s, expected %s: %s\n",
+           label,
+           shutter_state_to_string(actual),
+           shutter_state_to_string(expected),
+           result);
+    if (actual != expected)
+    {
+        failures++;
+    }
+}
+
 static int contains_pin(runtime_watched_pin_t pins[], int count, int pin)
 {
     int i;
@@ -138,32 +153,83 @@ static void check_panic_active_high(void)
               1);
 }
 
-static void check_smoke_confirmation_logic(void)
+static void check_sensor_confirmation_logic(void)
 {
     gpio_reset_simulated_values();
     alarm_logic_init(42);
     alarm_logic_set_armed(0);
 
-    check_int("smoke raw HIGH maps to not confirmed",
-              runtime_smoke_confirmed_from_raw_sequence(1, 1),
+    check_int("panic LOW through 200ms is ignored",
+              runtime_active_high_confirmed_from_raw_sequence(0, 0),
               0);
-    alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(1, 1));
+    check_int("panic HIGH blip shorter than 200ms is ignored",
+              runtime_active_high_confirmed_from_raw_sequence(1, 0),
+              0);
+    alarm_logic_handle_panic(runtime_active_high_confirmed_from_raw_sequence(1, 0));
+    check_int("panic HIGH blip does not trigger alarm",
+              alarm_logic_is_triggered(),
+              0);
+
+    check_int("panic sustained HIGH through 200ms confirms",
+              runtime_active_high_confirmed_from_raw_sequence(1, 1),
+              1);
+    alarm_logic_handle_panic(runtime_active_high_confirmed_from_raw_sequence(1, 1));
+    check_int("panic sustained HIGH triggers alarm",
+              alarm_logic_is_triggered(),
+              1);
+
+    alarm_logic_reset();
+
+    check_shutter_state("shutter open blip shorter than 200ms confirms closed",
+                        runtime_confirmed_shutter_state_from_raw_sequence(1, 0, 0, 1),
+                        SHUTTER_CLOSED);
+    alarm_logic_handle_shutter_dual(runtime_confirmed_shutter_state_from_raw_sequence(1, 0, 0, 1));
+    check_int("shutter open blip does not trigger alarm",
+              alarm_logic_is_triggered(),
+              0);
+
+    check_shutter_state("shutter sustained open through 200ms confirms open",
+                        runtime_confirmed_shutter_state_from_raw_sequence(1, 0, 1, 0),
+                        SHUTTER_OPEN);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_dual(runtime_confirmed_shutter_state_from_raw_sequence(1, 0, 1, 0));
+    check_int("shutter sustained open triggers while armed",
+              alarm_logic_is_triggered(),
+              1);
+
+    alarm_logic_reset();
+
+    check_shutter_state("shutter sustained tamper through 200ms confirms tamper",
+                        runtime_confirmed_shutter_state_from_raw_sequence(1, 1, 1, 1),
+                        SHUTTER_TAMPER);
+    alarm_logic_set_armed(0);
+    alarm_logic_handle_shutter_dual(runtime_confirmed_shutter_state_from_raw_sequence(1, 1, 1, 1));
+    check_int("shutter sustained tamper triggers while disarmed",
+              alarm_logic_is_triggered(),
+              1);
+
+    alarm_logic_reset();
+
+    check_int("smoke raw HIGH maps to not confirmed",
+              runtime_active_low_confirmed_from_raw_sequence(1, 1),
+              0);
+    alarm_logic_handle_smoke(runtime_active_low_confirmed_from_raw_sequence(1, 1));
     check_int("smoke raw HIGH does not trigger alarm",
               alarm_logic_is_triggered(),
               0);
 
     check_int("smoke LOW blip shorter than 200ms is ignored",
-              runtime_smoke_confirmed_from_raw_sequence(0, 1),
+              runtime_active_low_confirmed_from_raw_sequence(0, 1),
               0);
-    alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(0, 1));
+    alarm_logic_handle_smoke(runtime_active_low_confirmed_from_raw_sequence(0, 1));
     check_int("smoke LOW blip does not trigger alarm",
               alarm_logic_is_triggered(),
               0);
 
     check_int("smoke sustained LOW through 200ms confirms",
-              runtime_smoke_confirmed_from_raw_sequence(0, 0),
+              runtime_active_low_confirmed_from_raw_sequence(0, 0),
               1);
-    alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(0, 0));
+    alarm_logic_handle_smoke(runtime_active_low_confirmed_from_raw_sequence(0, 0));
     check_int("smoke sustained LOW triggers alarm",
               alarm_logic_is_triggered(),
               1);
@@ -277,7 +343,7 @@ int main(void)
 
     check_shutter2_ignored_when_single_shutter();
     check_panic_active_high();
-    check_smoke_confirmation_logic();
+    check_sensor_confirmation_logic();
 
     if (failures == 0)
     {
