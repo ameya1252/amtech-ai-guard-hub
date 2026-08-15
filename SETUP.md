@@ -76,8 +76,9 @@ DATABASE_URL
 
 On Railway, this should point to the Neon Postgres connection string.
 
-The backend creates these initial tables automatically at startup:
+The backend creates these tables automatically at startup:
 
+- `users`
 - `shops`
 - `devices`
 - `alerts`
@@ -111,3 +112,99 @@ or at compile time:
 HTTPS is handled by libcurl. No extra SSL code is required as long as the target libcurl build has TLS support, which `libcurl4-openssl-dev` provides in the Docker setup.
 
 The live Railway backend currently has WhatsApp simulation enabled. It accepts real HTTPS alert requests and returns `simulated:true`, but it does not send real Meta WhatsApp messages yet.
+
+## Hub Config File
+
+The hub runtime reads:
+
+```text
+/root/amtech_config.txt
+```
+
+Override for tests:
+
+```sh
+export AMTECH_CONFIG_PATH=/tmp/amtech_config.txt
+```
+
+Example config:
+
+```text
+SHUTTER_COUNT=1
+PANIC_ENABLED=1
+SMOKE_ENABLED=0
+MODEM_DEVICE=/dev/ttyS5
+ALERT_CONTACT_1=+918550991121
+ALERT_CONTACT_2=+919922434811
+ALERT_CONTACT_3=+919922435710
+CAMERA_RTSP_URL=rtsp://user:pass@camera-ip:554/stream1
+```
+
+Notes:
+
+- Leave `CAMERA_RTSP_URL` empty or omit it to disable camera detection.
+- `SHUTTER_COUNT=1` means Shutter-2 GPIO pins are not exported or watched.
+- `SMOKE_ENABLED=0` is the default so unwired smoke pins cannot false-trigger.
+- `MODEM_DEVICE` defaults to `/dev/ttyS5` but is configurable until the final PCB UART mapping is locked.
+
+## Runtime Loop Build
+
+The runtime now links pthreads because camera detection runs in a background thread while GPIO interrupt handling stays in the main thread.
+
+Cross-compile inside the Docker container:
+
+```sh
+docker exec luckfox-dev bash -c "cd /workspace && mkdir -p build/luckfox && /workspace/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -Wall -Wextra -DSIMULATE_NETWORK -I /workspace/src /workspace/src/runtime_loop.c /workspace/src/camera_detection.c /workspace/src/config.c /workspace/src/schedule.c /workspace/src/alarm_logic.c /workspace/src/alert_dispatch.c /workspace/src/gpio_control.c /workspace/src/sensor_input.c /workspace/src/notify_client.c /workspace/src/modem_hal.c /workspace/src/modem_state.c /workspace/src/sim_modem.c -pthread -o /workspace/build/luckfox/runtime_loop"
+```
+
+`-DSIMULATE_NETWORK` is still used for the board runtime build unless a target-compatible ARM/uClibc libcurl is available.
+
+For local simulation tests, use the relevant simulation flags:
+
+```text
+-DSIMULATE_GPIO -DSIMULATE_NETWORK -DSIMULATE_MODEM -DSIMULATE_CAMERA
+```
+
+## Camera Detection
+
+Runtime camera detection is enabled only when `CAMERA_RTSP_URL` is set.
+
+The current implementation uses the proven subprocess pipeline:
+
+```text
+ffmpeg RTSP capture -> /tmp/amtech_live_frame.jpg -> rknn_yolov5_demo -> parse person detections
+```
+
+The ffmpeg profile is:
+
+```text
+-rtsp_transport tcp -analyzeduration 1000000 -probesize 32768 -vf scale=640:640
+```
+
+Expected board paths:
+
+```text
+/root/rknn_yolov5_demo_export/rknn_yolov5_demo
+/root/rknn_yolov5_demo_export/model/yolov5.rknn
+```
+
+The camera worker has process timeouts:
+
+- ffmpeg capture: 15 seconds
+- RKNN demo subprocess: 30 seconds
+
+GPIO interrupt handling stays in the main thread and should continue even if camera capture is slow or fails.
+
+Testing-only force armed mode:
+
+```sh
+./runtime_loop --force-armed
+```
+
+or:
+
+```sh
+AMTECH_FORCE_ARMED=1 ./runtime_loop
+```
+
+This bypasses the schedule and is not for production use.

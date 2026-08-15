@@ -259,6 +259,7 @@ int main(void)
     check_string("missing config default alert contact 3",
                  config.alert_contacts[2],
                  AMTECH_DEFAULT_ALERT_CONTACT_3);
+    check_string("missing config default camera URL", config.camera_rtsp_url, "");
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -266,7 +267,7 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
@@ -277,6 +278,9 @@ int main(void)
     check_string("configured alert contact 1", config.alert_contacts[0], "+919999999991");
     check_string("configured alert contact 2", config.alert_contacts[1], "+919999999992");
     check_string("configured alert contact 3", config.alert_contacts[2], "+919999999993");
+    check_string("configured camera RTSP URL",
+                 config.camera_rtsp_url,
+                 "rtsp://user:pass@192.168.0.2:554/stream1");
 
     amtech_config_set_defaults(&config);
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);

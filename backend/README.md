@@ -11,7 +11,8 @@ Content-Type: application/json
 {
   "shop_id": "amtech-demo-shop",
   "event_type": "intrusion",
-  "timestamp": "2026-07-18T12:00:00Z"
+  "timestamp": "2026-07-18T12:00:00Z",
+  "media_url": "https://example.com/optional-alert-image.jpg"
 }
 ```
 
@@ -64,6 +65,16 @@ Test it from another terminal:
 python3 test_alerts.py
 ```
 
+Allowed alert event types:
+
+- `intrusion`
+- `shutter`
+- `shutter-1`
+- `shutter-2`
+- `panic`
+- `smoke`
+- `test`
+
 ## Database
 
 The backend reads its database connection from `DATABASE_URL`.
@@ -82,14 +93,61 @@ DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 SIMULATE_WHATSAPP=1 pytho
 
 On startup, SQLAlchemy creates the initial tables if they do not exist:
 
+- `users`
 - `shops`
 - `devices`
 - `alerts`
 
-Alert history endpoint:
+Alert history endpoint requires a logged-in user token and shop ownership:
 
 ```sh
-curl http://127.0.0.1:8000/alerts/amtech-demo-shop
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/alerts/amtech-demo-shop
+```
+
+## App/Auth Endpoints
+
+The backend also has the first mobile-app-facing APIs:
+
+- `POST /auth/signup`
+- `POST /auth/login`
+- `POST /shop`
+- `GET /shop/<shop_id>`
+- `GET /me/shops`
+- `POST /shop/<shop_id>/arm`
+- `POST /shop/<shop_id>/disarm`
+- `GET /shop/<shop_id>/status`
+- `GET /alerts/<shop_id>`
+
+These routes use JWT auth. Set:
+
+```sh
+JWT_SECRET=...
+```
+
+Auth routes have basic rate limits.
+
+## Media Upload URLs
+
+The backend can generate Cloudflare R2 presigned upload URLs for future alert images/videos:
+
+```http
+POST /shop/<shop_id>/media/upload-url
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "content_type": "image/jpeg"
+}
+```
+
+Required environment variables:
+
+```sh
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET_NAME=...
+R2_PUBLIC_BASE_URL=...
 ```
 
 ## Real Meta WhatsApp Cloud API Mode

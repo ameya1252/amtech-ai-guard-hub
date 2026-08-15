@@ -1,4 +1,5 @@
 #include "alarm_logic.h"
+#include "camera_detection.h"
 #include "config.h"
 #include "gpio_control.h"
 #include "runtime_loop.h"
@@ -12,6 +13,9 @@
 
 #ifndef SIMULATE_GPIO
 #include <fcntl.h>
+#ifndef SIMULATE_CAMERA
+#include <pthread.h>
+#endif
 #include <poll.h>
 #include <time.h>
 #include <unistd.h>
@@ -29,6 +33,7 @@
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_DEBOUNCE_CONFIRM_MS 200
 #define AMTECH_GPIO_POLL_TIMEOUT_MS 100
+#define AMTECH_CAMERA_RETRY_DELAY_SECONDS 1
 
 typedef enum
 {
@@ -53,6 +58,25 @@ typedef struct
     int fd;
     long long last_event_ms;
 } gpio_watch_t;
+
+#ifndef SIMULATE_GPIO
+#ifndef SIMULATE_CAMERA
+typedef struct
+{
+    pthread_mutex_t mutex;
+    int has_result;
+    unsigned int dropped_results;
+    camera_detection_result_t result;
+} camera_result_queue_t;
+
+typedef struct
+{
+    char rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
+    camera_result_queue_t *queue;
+    volatile int stop_requested;
+} camera_thread_context_t;
+#endif
+#endif
 
 static const gpio_watch_t SHUTTER1_NC_WATCH = {
     AMTECH_SHUTTER_NC_GPIO_PIN, WATCH_SHUTTER1_NC, "shutter-1 NC", "both",
@@ -282,6 +306,25 @@ static const char *runtime_config_path(void)
     return AMTECH_DEFAULT_CONFIG_PATH;
 }
 
+static void process_camera_detection_result(const camera_detection_result_t *result)
+{
+    if (result == NULL)
+    {
+        return;
+    }
+
+    printf("Runtime: camera frame person=%d confidence=%.3f\n",
+           result->person_detected,
+           result->max_confidence);
+
+    if (result->person_detected)
+    {
+        alarm_logic_handle_detection(0, "person", result->max_confidence);
+    }
+
+    alarm_logic_end_frame();
+}
+
 #ifndef SIMULATE_GPIO
 static long long monotonic_ms(void)
 {
@@ -316,6 +359,116 @@ static void update_schedule_from_realtime(void)
 
     alarm_logic_set_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
 }
+
+#ifndef SIMULATE_CAMERA
+static void camera_queue_init(camera_result_queue_t *queue)
+{
+    pthread_mutex_init(&queue->mutex, NULL);
+    queue->has_result = 0;
+    queue->dropped_results = 0;
+    memset(&queue->result, 0, sizeof(queue->result));
+}
+
+static void camera_queue_destroy(camera_result_queue_t *queue)
+{
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+static void camera_queue_publish(camera_result_queue_t *queue, const camera_detection_result_t *result)
+{
+    pthread_mutex_lock(&queue->mutex);
+    if (queue->has_result)
+    {
+        queue->dropped_results++;
+    }
+    queue->result = *result;
+    queue->has_result = 1;
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static int camera_queue_consume(camera_result_queue_t *queue, camera_detection_result_t *result)
+{
+    int has_result;
+
+    pthread_mutex_lock(&queue->mutex);
+    has_result = queue->has_result;
+    if (has_result)
+    {
+        *result = queue->result;
+        queue->has_result = 0;
+    }
+    pthread_mutex_unlock(&queue->mutex);
+
+    return has_result;
+}
+
+static void *camera_thread_main(void *arg)
+{
+    camera_thread_context_t *context = (camera_thread_context_t *)arg;
+
+    printf("Runtime: camera detection thread started\n");
+    while (!context->stop_requested)
+    {
+        camera_detection_result_t result;
+
+        if (camera_detection_run_once(context->rtsp_url, &result) == 0)
+        {
+            camera_queue_publish(context->queue, &result);
+        }
+        else
+        {
+            printf("Runtime: camera detection cycle failed\n");
+            sleep(AMTECH_CAMERA_RETRY_DELAY_SECONDS);
+        }
+    }
+
+    printf("Runtime: camera detection thread stopped\n");
+    return NULL;
+}
+
+static int start_camera_thread(const amtech_config_t *config,
+                               camera_result_queue_t *queue,
+                               camera_thread_context_t *context,
+                               pthread_t *thread,
+                               int *started)
+{
+    if (config->camera_rtsp_url[0] == '\0')
+    {
+        printf("Runtime: camera detection disabled; CAMERA_RTSP_URL is empty\n");
+        *started = 0;
+        return 0;
+    }
+
+    snprintf(context->rtsp_url, sizeof(context->rtsp_url), "%s", config->camera_rtsp_url);
+    context->queue = queue;
+    context->stop_requested = 0;
+
+    if (pthread_create(thread, NULL, camera_thread_main, context) != 0)
+    {
+        printf("Runtime: failed to start camera detection thread\n");
+        *started = 0;
+        return -1;
+    }
+
+    *started = 1;
+    return 0;
+}
+#else
+static void maybe_run_simulated_camera_once(const amtech_config_t *config)
+{
+    camera_detection_result_t result;
+
+    if (config->camera_rtsp_url[0] == '\0')
+    {
+        return;
+    }
+
+    if (camera_detection_run_once(config->camera_rtsp_url, &result) == 0)
+    {
+        process_camera_detection_result(&result);
+    }
+}
+#endif
 
 static void tick_schedule_elapsed_seconds(long long *last_tick_ms)
 {
@@ -524,12 +677,48 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
     struct pollfd poll_fds[AMTECH_RUNTIME_MAX_WATCHED_PINS];
     long long last_schedule_tick_ms = 0;
     long long last_alarm_tick_ms = 0;
+#ifndef SIMULATE_CAMERA
+    camera_result_queue_t camera_queue;
+    camera_thread_context_t camera_context;
+    pthread_t camera_thread;
+    int camera_thread_started = 0;
+#endif
     int watch_count;
     int i;
+
+#ifndef SIMULATE_CAMERA
+    camera_queue_init(&camera_queue);
+    if (start_camera_thread(config,
+                            &camera_queue,
+                            &camera_context,
+                            &camera_thread,
+                            &camera_thread_started) != 0)
+    {
+        camera_queue_destroy(&camera_queue);
+        return -1;
+    }
+#else
+    if (config->camera_rtsp_url[0] == '\0')
+    {
+        printf("Runtime: camera detection disabled; CAMERA_RTSP_URL is empty\n");
+    }
+    else
+    {
+        printf("Runtime: SIMULATE_CAMERA enabled; no camera thread, ffmpeg, or RTSP access\n");
+    }
+#endif
 
     watch_count = build_gpio_watches(config, watches, AMTECH_RUNTIME_MAX_WATCHED_PINS);
     if (watch_count < 0)
     {
+#ifndef SIMULATE_CAMERA
+        if (camera_thread_started)
+        {
+            camera_context.stop_requested = 1;
+            pthread_join(camera_thread, NULL);
+        }
+        camera_queue_destroy(&camera_queue);
+#endif
         return -1;
     }
 
@@ -538,6 +727,14 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
         if (setup_gpio_watch(&watches[i]) != 0)
         {
             close_gpio_watches(watches, watch_count);
+#ifndef SIMULATE_CAMERA
+            if (camera_thread_started)
+            {
+                camera_context.stop_requested = 1;
+                pthread_join(camera_thread, NULL);
+            }
+            camera_queue_destroy(&camera_queue);
+#endif
             return -1;
         }
 
@@ -564,6 +761,19 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
             update_schedule_from_realtime();
         }
 
+#ifdef SIMULATE_CAMERA
+        maybe_run_simulated_camera_once(config);
+#else
+        {
+            camera_detection_result_t camera_result;
+
+            while (camera_queue_consume(&camera_queue, &camera_result))
+            {
+                process_camera_detection_result(&camera_result);
+            }
+        }
+#endif
+
         ready = poll(poll_fds, watch_count, AMTECH_GPIO_POLL_TIMEOUT_MS);
         if (ready < 0)
         {
@@ -574,6 +784,14 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
 
             printf("Runtime: poll failed: %s\n", strerror(errno));
             close_gpio_watches(watches, watch_count);
+#ifndef SIMULATE_CAMERA
+            if (camera_thread_started)
+            {
+                camera_context.stop_requested = 1;
+                pthread_join(camera_thread, NULL);
+            }
+            camera_queue_destroy(&camera_queue);
+#endif
             return -1;
         }
 
@@ -590,8 +808,6 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
             }
             poll_fds[i].revents = 0;
         }
-
-        alarm_logic_end_frame();
     }
 }
 #endif
@@ -602,6 +818,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
     int panic_triggered;
     int panic_raw_value;
     int should_be_armed;
+    int camera_processed = 0;
 
     printf("Runtime: iteration %d\n", iteration);
 
@@ -646,11 +863,23 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
                                                                                 smoke_confirmed_raw));
     }
 
-    /*
-     * TODO: Capture camera frame, run RKNN YOLO inference, pass each detection to
-     * alarm_logic_handle_detection(), then call alarm_logic_end_frame().
-     */
-    alarm_logic_end_frame();
+#ifdef SIMULATE_CAMERA
+    if (config->camera_rtsp_url[0] != '\0')
+    {
+        camera_detection_result_t camera_result;
+
+        if (camera_detection_run_once(config->camera_rtsp_url, &camera_result) == 0)
+        {
+            process_camera_detection_result(&camera_result);
+            camera_processed = 1;
+        }
+    }
+#endif
+
+    if (!camera_processed)
+    {
+        alarm_logic_end_frame();
+    }
     alarm_logic_tick(1000);
 }
 #endif

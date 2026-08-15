@@ -15,6 +15,7 @@ extern "C" {
 #define AMTECH_DEFAULT_ALERT_CONTACT_3 "+919922435710"
 #define AMTECH_MODEM_DEVICE_MAX 64
 #define AMTECH_ALERT_CONTACT_NUMBER_MAX 24
+#define AMTECH_CAMERA_RTSP_URL_MAX 256
 
 typedef struct
 {
@@ -28,6 +29,7 @@ typedef struct
      * Contacts are ordered by call-escalation priority.
      */
     char alert_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
+    char camera_rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
 } amtech_config_t;
 
 void amtech_config_set_defaults(amtech_config_t *config);

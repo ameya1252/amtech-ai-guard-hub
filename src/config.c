@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CONFIG_LINE_MAX 128
+#define CONFIG_LINE_MAX 512
 
 static char *trim_whitespace(char *text)
 {
@@ -75,6 +75,7 @@ void amtech_config_set_defaults(amtech_config_t *config)
     set_alert_contact(config, 0, AMTECH_DEFAULT_ALERT_CONTACT_1);
     set_alert_contact(config, 1, AMTECH_DEFAULT_ALERT_CONTACT_2);
     set_alert_contact(config, 2, AMTECH_DEFAULT_ALERT_CONTACT_3);
+    config->camera_rtsp_url[0] = '\0';
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -94,7 +95,7 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s\n",
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_RTSP_URL=(disabled)\n",
                    path,
                    config->modem_device,
                    config->alert_contacts[0],
@@ -193,6 +194,16 @@ int amtech_config_load(const char *path, amtech_config_t *config)
         {
             printf("Config: ALERT_CONTACT_NUMBER is deprecated; use ALERT_CONTACT_1/2/3\n");
         }
+        else if (strcmp(key, "CAMERA_RTSP_URL") == 0)
+        {
+            if (strlen(value) >= sizeof(config->camera_rtsp_url))
+            {
+                printf("Config: CAMERA_RTSP_URL too long, keeping current value\n");
+                continue;
+            }
+
+            snprintf(config->camera_rtsp_url, sizeof(config->camera_rtsp_url), "%s", value);
+        }
         else
         {
             printf("Config: ignoring unknown key %s\n", key);
@@ -208,13 +219,14 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_RTSP_URL=%s\n",
            config->shutter_count,
            config->panic_enabled,
            config->smoke_enabled,
            config->modem_device,
            config->alert_contacts[0],
            config->alert_contacts[1],
-           config->alert_contacts[2]);
+           config->alert_contacts[2],
+           config->camera_rtsp_url[0] != '\0' ? config->camera_rtsp_url : "(disabled)");
     return 0;
 }
