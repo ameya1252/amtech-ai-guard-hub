@@ -6,29 +6,11 @@
 #include <string.h>
 
 #define MODEM_STATE_RESPONSE_SIZE 512
-#define MODEM_STATE_IP_SIZE 64
 #define MODEM_STATE_AT_TIMEOUT_MS 1000
 #define MODEM_STATE_MAX_RETRIES 5
 
-typedef struct {
-    const char *name;
-    const char *match_fragment;
-    const char *apn;
-    const char *pdp_type;
-    int configure_jio_ims_context;
-} operator_profile_t;
-
-static const operator_profile_t operator_profiles[] = {
-    {"Jio", "Jio", "jionet", "IPV4V6", 1},
-    {"Airtel", "Airtel", "airtelgprs.com", "IPV4V6", 0},
-    {"Vi", "Vi", "www", "IPV4V6", 0},
-    {"BSNL", "BSNL", "bsnlnet", "IPV4V6", 0},
-};
-
 static modem_state_t current_state = MODEM_STATE_POWER_OFF;
 static int retry_count = 0;
-static const operator_profile_t *selected_operator = NULL;
-static char assigned_ip[MODEM_STATE_IP_SIZE];
 
 static int response_has_ok(const char *response)
 {
@@ -130,165 +112,10 @@ static int network_is_registered(void)
     return cereg_response_is_registered(response) ? 1 : 0;
 }
 
-static int extract_cops_operator(const char *response,
-                                 int *format,
-                                 char *operator_value,
-                                 size_t operator_value_size)
-{
-    const char *cops;
-    const char *first_comma;
-    const char *second_comma;
-    const char *value_start;
-    const char *value_end;
-    size_t length;
-
-    if (response == NULL || format == NULL || operator_value == NULL || operator_value_size == 0)
-    {
-        return -1;
-    }
-
-    operator_value[0] = '\0';
-    cops = strstr(response, "+COPS:");
-    if (cops == NULL)
-    {
-        return -1;
-    }
-
-    first_comma = strchr(cops, ',');
-    if (first_comma == NULL)
-    {
-        return -1;
-    }
-
-    second_comma = strchr(first_comma + 1, ',');
-    if (second_comma == NULL)
-    {
-        return -1;
-    }
-
-    if (sscanf(first_comma + 1, "%d", format) != 1)
-    {
-        return -1;
-    }
-
-    value_start = second_comma + 1;
-    while (*value_start == ' ' || *value_start == '\t')
-    {
-        value_start++;
-    }
-
-    if (*value_start == '"')
-    {
-        value_start++;
-        value_end = strchr(value_start, '"');
-        if (value_end == NULL)
-        {
-            return -1;
-        }
-    }
-    else
-    {
-        value_end = value_start;
-        while (*value_end != '\0' &&
-               *value_end != ',' &&
-               *value_end != '\r' &&
-               *value_end != '\n')
-        {
-            value_end++;
-        }
-    }
-
-    length = (size_t)(value_end - value_start);
-    if (length == 0 || length >= operator_value_size)
-    {
-        return -1;
-    }
-
-    memcpy(operator_value, value_start, length);
-    operator_value[length] = '\0';
-    return 0;
-}
-
-static int numeric_operator_is_jio(const char *operator_value)
-{
-    int numeric_code;
-
-    if (operator_value == NULL)
-    {
-        return 0;
-    }
-
-    /*
-     * Real hardware returned +COPS: 0,2,"405864",7.
-     * Format 2 is numeric MCC-MNC. Jio is in the 405854-405874 range,
-     * so matching the numeric code is more stable than relying on a
-     * firmware-specific operator name string.
-     */
-    if (sscanf(operator_value, "%d", &numeric_code) != 1)
-    {
-        return 0;
-    }
-
-    return numeric_code >= 405854 && numeric_code <= 405874;
-}
-
-static const operator_profile_t *profile_for_cops_response(const char *response)
-{
-    char operator_value[64];
-    int format;
-    size_t index;
-
-    if (extract_cops_operator(response, &format, operator_value, sizeof(operator_value)) != 0)
-    {
-        return NULL;
-    }
-
-    if (format == 2 && numeric_operator_is_jio(operator_value))
-    {
-        return &operator_profiles[0];
-    }
-
-    for (index = 0; index < sizeof(operator_profiles) / sizeof(operator_profiles[0]); index++)
-    {
-        if (strstr(operator_value, operator_profiles[index].match_fragment) != NULL)
-        {
-            return &operator_profiles[index];
-        }
-    }
-
-    return NULL;
-}
-
-const char *modem_state_operator_name_for_cops_response(const char *response)
-{
-    const operator_profile_t *profile = profile_for_cops_response(response);
-
-    return profile != NULL ? profile->name : NULL;
-}
-
-static const operator_profile_t *detect_operator(void)
-{
-    char response[MODEM_STATE_RESPONSE_SIZE];
-
-    if (sim_modem_send_at("AT+COPS?", response, sizeof(response), MODEM_STATE_AT_TIMEOUT_MS) != 0)
-    {
-        return NULL;
-    }
-
-    if (!response_has_ok(response))
-    {
-        return NULL;
-    }
-
-    return profile_for_cops_response(response);
-}
-
 void modem_state_init(void)
 {
     current_state = MODEM_STATE_POWER_OFF;
     retry_count = 0;
-    selected_operator = NULL;
-    assigned_ip[0] = '\0';
 }
 
 modem_state_t modem_state_get_current(void)
@@ -312,10 +139,6 @@ const char *modem_state_name(modem_state_t state)
         return "REGISTERING";
     case MODEM_STATE_REGISTERED:
         return "REGISTERED";
-    case MODEM_STATE_PDP_ACTIVE:
-        return "PDP_ACTIVE";
-    case MODEM_STATE_CONNECTED:
-        return "CONNECTED";
     case MODEM_STATE_FAILED:
         return "FAILED";
     default:
@@ -367,48 +190,13 @@ int modem_state_tick(void)
         return fail_or_retry("AT+CEREG?");
 
     case MODEM_STATE_REGISTERED:
-        selected_operator = detect_operator();
-        if (selected_operator == NULL)
-        {
-            return fail_or_retry("AT+COPS?");
-        }
-
-        printf("Modem state: detected operator %s, APN=%s, PDP=%s\n",
-               selected_operator->name,
-               selected_operator->apn,
-               selected_operator->pdp_type);
-
-        if (selected_operator->configure_jio_ims_context)
-        {
-            /*
-             * Jio requires a separate IMS PDP profile in addition to the data
-             * profile. Voice/SMS usage is still deferred until hardware
-             * validation, but the context is configured here so the modem has
-             * the expected carrier profile.
-             */
-            if (sim_modem_configure_pdp_context(8, selected_operator->pdp_type, "IMS") != 0)
-            {
-                return fail_or_retry("Jio IMS PDP context configuration");
-            }
-        }
-
-        if (sim_modem_connect_data_profile(selected_operator->apn, selected_operator->pdp_type) == 0)
-        {
-            transition_to(MODEM_STATE_PDP_ACTIVE);
-            return 0;
-        }
-        return fail_or_retry("PDP activation");
-
-    case MODEM_STATE_PDP_ACTIVE:
-        if (sim_modem_get_ip(assigned_ip, sizeof(assigned_ip)) == 0)
-        {
-            printf("Modem state: connected with IP %s\n", assigned_ip);
-            transition_to(MODEM_STATE_CONNECTED);
-            return 0;
-        }
-        return fail_or_retry("IP address confirmation");
-
-    case MODEM_STATE_CONNECTED:
+        /*
+         * Deliberate architecture decision: the SIM7672 path stops at cellular
+         * network registration. Packet data/PDP/APN setup was removed because
+         * the modem is now reserved for SMS and voice-call escalation during
+         * internet outages, avoiding carrier-specific PDP quirks in the alarm
+         * reliability path.
+         */
         return 0;
 
     case MODEM_STATE_FAILED:
@@ -420,7 +208,7 @@ int modem_state_tick(void)
     }
 }
 
-int modem_state_is_connected(void)
+int modem_state_is_registered(void)
 {
-    return current_state == MODEM_STATE_CONNECTED;
+    return current_state == MODEM_STATE_REGISTERED;
 }

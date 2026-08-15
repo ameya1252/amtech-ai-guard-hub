@@ -12,7 +12,7 @@ extern "C" {
  * commands.
  */
 int modem_get_registration_status(void);
-int modem_connect_data(void);
+int modem_register_network(void);
 int modem_send_sms(const char *number, const char *message);
 int modem_make_voice_call(const char *number);
 

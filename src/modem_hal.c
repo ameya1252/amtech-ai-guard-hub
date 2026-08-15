@@ -9,11 +9,11 @@ int modem_get_registration_status(void)
     return (int)modem_state_get_current();
 }
 
-int modem_connect_data(void)
+int modem_register_network(void)
 {
     int tick_result;
 
-    if (modem_state_is_connected())
+    if (modem_state_is_registered())
     {
         return 1;
     }
@@ -24,7 +24,7 @@ int modem_connect_data(void)
         return -1;
     }
 
-    return modem_state_is_connected() ? 1 : 0;
+    return modem_state_is_registered() ? 1 : 0;
 }
 
 int modem_send_sms(const char *number, const char *message)

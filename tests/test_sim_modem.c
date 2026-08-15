@@ -53,7 +53,6 @@ static int check_device_path(const char *label, const char *expected)
 int main(void)
 {
     int failures = 0;
-    char ip_address[64];
     const char *custom_config_path = "/tmp/amtech_modem_device_config_for_test.txt";
     FILE *fp;
 
@@ -76,31 +75,8 @@ int main(void)
     failures += check_command("AT", "OK");
     failures += check_command("AT+CSQ", "+CSQ:");
     failures += check_command("AT+CREG?", "+CREG:");
-
-    if (sim_modem_connect_data("airtelgprs.com") != 0)
-    {
-        printf("sim_modem_connect_data failed: FAIL\n");
-        failures++;
-    }
-    else
-    {
-        printf("sim_modem_connect_data succeeded: PASS\n");
-    }
-
-    if (sim_modem_get_ip(ip_address, sizeof(ip_address)) != 0)
-    {
-        printf("sim_modem_get_ip failed: FAIL\n");
-        failures++;
-    }
-    else if (strcmp(ip_address, "10.83.214.110") != 0)
-    {
-        printf("sim_modem_get_ip returned %s, expected 10.83.214.110: FAIL\n", ip_address);
-        failures++;
-    }
-    else
-    {
-        printf("sim_modem_get_ip returned %s: PASS\n", ip_address);
-    }
+    failures += check_command("AT+CPIN?", "+CPIN: READY");
+    failures += check_command("AT+CEREG?", "+CEREG:");
 
     if (failures == 0)
     {
