@@ -26,6 +26,7 @@ def main():
     send_alert("amtech-demo-shop", "shutter-1")
     send_alert("amtech-demo-shop", "shutter-2")
     send_alert("amtech-demo-shop", "panic")
+    send_alert("amtech-demo-shop", "smoke")
 
     response = requests.get(ALERT_HISTORY_URL, timeout=5)
     print(f"GET {ALERT_HISTORY_URL}")

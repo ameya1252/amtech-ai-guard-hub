@@ -25,6 +25,7 @@ void alarm_logic_handle_shutter_dual_named(shutter_state_t state,
                                            const char *shutter_name,
                                            const char *event_type);
 void alarm_logic_handle_panic(int triggered);
+void alarm_logic_handle_smoke(int triggered);
 void alarm_logic_end_frame(void);
 void trigger_alarm(void);
 

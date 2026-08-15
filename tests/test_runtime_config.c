@@ -90,6 +90,7 @@ static void check_shutter2_ignored_when_single_shutter(void)
 
     config.shutter_count = 1;
     config.panic_enabled = 1;
+    config.smoke_enabled = 0;
 
     gpio_reset_simulated_values();
     alarm_logic_init(42);
@@ -137,6 +138,37 @@ static void check_panic_active_high(void)
               1);
 }
 
+static void check_smoke_confirmation_logic(void)
+{
+    gpio_reset_simulated_values();
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+
+    check_int("smoke raw HIGH maps to not confirmed",
+              runtime_smoke_confirmed_from_raw_sequence(1, 1),
+              0);
+    alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(1, 1));
+    check_int("smoke raw HIGH does not trigger alarm",
+              alarm_logic_is_triggered(),
+              0);
+
+    check_int("smoke LOW blip shorter than 200ms is ignored",
+              runtime_smoke_confirmed_from_raw_sequence(0, 1),
+              0);
+    alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(0, 1));
+    check_int("smoke LOW blip does not trigger alarm",
+              alarm_logic_is_triggered(),
+              0);
+
+    check_int("smoke sustained LOW through 200ms confirms",
+              runtime_smoke_confirmed_from_raw_sequence(0, 0),
+              1);
+    alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(0, 0));
+    check_int("smoke sustained LOW triggers alarm",
+              alarm_logic_is_triggered(),
+              1);
+}
+
 int main(void)
 {
     amtech_config_t config;
@@ -150,6 +182,7 @@ int main(void)
     check_int("missing config load", amtech_config_load(missing_config_path, &config), 0);
     check_int("missing config default shutter count", config.shutter_count, 1);
     check_int("missing config default panic enabled", config.panic_enabled, 1);
+    check_int("missing config default smoke disabled", config.smoke_enabled, 0);
     check_string("missing config default modem device", config.modem_device, AMTECH_DEFAULT_MODEM_DEVICE);
 
     fp = fopen(two_shutter_config_path, "w");
@@ -158,28 +191,32 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
     check_int("two-shutter config shutter count", config.shutter_count, 2);
     check_int("two-shutter config panic enabled", config.panic_enabled, 1);
+    check_int("two-shutter config smoke enabled", config.smoke_enabled, 1);
     check_string("configured modem device", config.modem_device, "/dev/ttyS1");
 
     amtech_config_set_defaults(&config);
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
 
     check_int("default shutter count", config.shutter_count, 1);
+    check_int("default smoke disabled", config.smoke_enabled, 0);
     check_int("default watched pin count", count, 3);
     check_pin_present(pins, count, 33, 1);
     check_pin_present(pins, count, 40, 1);
     check_pin_present(pins, count, 41, 0);
     check_pin_present(pins, count, 72, 0);
     check_pin_present(pins, count, 32, 1);
+    check_pin_present(pins, count, 54, 0);
     check_pin_edge(pins, count, 32, "rising");
 
     config.shutter_count = 1;
     config.panic_enabled = 1;
+    config.smoke_enabled = 0;
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
 
     check_int("SHUTTER_COUNT=1 watched pin count", count, 3);
@@ -188,10 +225,12 @@ int main(void)
     check_pin_present(pins, count, 41, 0);
     check_pin_present(pins, count, 72, 0);
     check_pin_present(pins, count, 32, 1);
+    check_pin_present(pins, count, 54, 0);
     check_pin_edge(pins, count, 32, "rising");
 
     config.shutter_count = 2;
     config.panic_enabled = 1;
+    config.smoke_enabled = 0;
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
 
     check_int("SHUTTER_COUNT=2 watched pin count", count, 5);
@@ -200,6 +239,7 @@ int main(void)
     check_pin_present(pins, count, 41, 1);
     check_pin_present(pins, count, 72, 1);
     check_pin_present(pins, count, 32, 1);
+    check_pin_present(pins, count, 54, 0);
     check_pin_edge(pins, count, 33, "both");
     check_pin_edge(pins, count, 40, "both");
     check_pin_edge(pins, count, 41, "both");
@@ -208,13 +248,32 @@ int main(void)
 
     config.shutter_count = 2;
     config.panic_enabled = 0;
+    config.smoke_enabled = 0;
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
 
     check_int("PANIC_ENABLED=0 watched pin count", count, 4);
     check_pin_present(pins, count, 32, 0);
 
+    config.shutter_count = 2;
+    config.panic_enabled = 1;
+    config.smoke_enabled = 1;
+    count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
+
+    check_int("SMOKE_ENABLED=1 watched pin count", count, 6);
+    check_pin_present(pins, count, 54, 1);
+    check_pin_edge(pins, count, 54, "both");
+
+    config.shutter_count = 2;
+    config.panic_enabled = 1;
+    config.smoke_enabled = 0;
+    count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);
+
+    check_int("SMOKE_ENABLED=0 watched pin count", count, 5);
+    check_pin_present(pins, count, 54, 0);
+
     check_shutter2_ignored_when_single_shutter();
     check_panic_active_high();
+    check_smoke_confirmation_logic();
 
     if (failures == 0)
     {

@@ -303,6 +303,18 @@ void alarm_logic_handle_panic(int triggered)
     trigger_alarm();
 }
 
+void alarm_logic_handle_smoke(int triggered)
+{
+    if (!triggered)
+    {
+        return;
+    }
+
+    printf("Alarm: SMOKE detector triggered\n");
+    pending_alarm_event_type = "smoke";
+    trigger_alarm();
+}
+
 void alarm_logic_end_frame(void)
 {
     if (!armed)

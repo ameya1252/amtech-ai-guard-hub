@@ -15,6 +15,7 @@ typedef struct
 {
     int shutter_count;
     int panic_enabled;
+    int smoke_enabled;
     char modem_device[AMTECH_MODEM_DEVICE_MAX];
 } amtech_config_t;
 

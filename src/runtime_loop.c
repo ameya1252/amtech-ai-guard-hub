@@ -24,9 +24,11 @@
 #define AMTECH_SHUTTER2_NC_GPIO_PIN 41
 #define AMTECH_SHUTTER2_NO_GPIO_PIN 72
 #define AMTECH_PANIC_GPIO_PIN 32
+#define AMTECH_SMOKE_GPIO_PIN 54
 #define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_SENSOR_DEBOUNCE_MS 25
+#define AMTECH_SMOKE_CONFIRM_MS 200
 #define AMTECH_GPIO_POLL_TIMEOUT_MS 100
 
 typedef enum
@@ -35,7 +37,8 @@ typedef enum
     WATCH_SHUTTER1_NO,
     WATCH_SHUTTER2_NC,
     WATCH_SHUTTER2_NO,
-    WATCH_PANIC
+    WATCH_PANIC,
+    WATCH_SMOKE
 } watched_pin_role_t;
 
 typedef struct
@@ -66,6 +69,9 @@ static const gpio_watch_t SHUTTER2_NO_WATCH = {
     AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN, "shutter-2", "shutter-2", -1, 0};
 static const gpio_watch_t PANIC_WATCH = {
     AMTECH_PANIC_GPIO_PIN, WATCH_PANIC, "panic", "rising",
+    -1, -1, NULL, NULL, -1, 0};
+static const gpio_watch_t SMOKE_WATCH = {
+    AMTECH_SMOKE_GPIO_PIN, WATCH_SMOKE, "smoke", "both",
     -1, -1, NULL, NULL, -1, 0};
 
 static int add_watch(gpio_watch_t watches[], int max_watches, int *count, const gpio_watch_t *watch)
@@ -113,6 +119,14 @@ static int build_gpio_watches(const amtech_config_t *config, gpio_watch_t watche
         }
     }
 
+    if (config->smoke_enabled)
+    {
+        if (add_watch(watches, max_watches, &count, &SMOKE_WATCH) != 0)
+        {
+            return -1;
+        }
+    }
+
     return count;
 }
 
@@ -148,6 +162,16 @@ int runtime_build_watched_pins(const amtech_config_t *config,
 int runtime_panic_triggered_from_raw(int raw_value)
 {
     return raw_value ? 1 : 0;
+}
+
+int runtime_smoke_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value)
+{
+    if (initial_raw_value != 0)
+    {
+        return 0;
+    }
+
+    return confirmed_raw_value == 0 ? 1 : 0;
 }
 
 int runtime_process_configured_shutters(const amtech_config_t *config)
@@ -341,6 +365,34 @@ static int setup_gpio_watch(gpio_watch_t *watch)
     return 0;
 }
 
+static int smoke_low_confirmed(gpio_watch_t *watch)
+{
+    int confirmed_raw_value;
+
+    printf("Runtime: smoke GPIO %d LOW candidate, confirming for %d ms\n",
+           watch->pin,
+           AMTECH_SMOKE_CONFIRM_MS);
+    usleep(AMTECH_SMOKE_CONFIRM_MS * 1000);
+
+    if (read_gpio_value_fd(watch->fd, &confirmed_raw_value) != 0)
+    {
+        return 0;
+    }
+
+    if (runtime_smoke_confirmed_from_raw_sequence(0, confirmed_raw_value))
+    {
+        printf("Runtime: smoke GPIO %d still LOW after %d ms\n",
+               watch->pin,
+               AMTECH_SMOKE_CONFIRM_MS);
+        return 1;
+    }
+
+    printf("Runtime: ignored smoke GPIO %d brief LOW blip, confirmed raw=%d\n",
+           watch->pin,
+           confirmed_raw_value);
+    return 0;
+}
+
 static void close_gpio_watches(gpio_watch_t watches[], int count)
 {
     int i;
@@ -384,6 +436,20 @@ static void handle_sensor_event(gpio_watch_t *watch)
     {
         panic_triggered = runtime_panic_triggered_from_raw(raw_value);
         alarm_logic_handle_panic(panic_triggered);
+        return;
+    }
+
+    if (watch->role == WATCH_SMOKE)
+    {
+        if (raw_value != 0)
+        {
+            return;
+        }
+
+        if (smoke_low_confirmed(watch))
+        {
+            alarm_logic_handle_smoke(1);
+        }
         return;
     }
 
@@ -511,6 +577,20 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         alarm_logic_handle_panic(panic_triggered);
     }
 
+    if (config->smoke_enabled)
+    {
+        int smoke_initial_raw = iteration == 7 ? 0 : 1;
+        int smoke_confirmed_raw = iteration == 7 ? 0 : 1;
+
+        sensor_input_set_simulated_raw_value(AMTECH_SMOKE_GPIO_PIN, smoke_confirmed_raw);
+        printf("Runtime: smoke GPIO %d initial raw %d confirmed raw %d\n",
+               AMTECH_SMOKE_GPIO_PIN,
+               smoke_initial_raw,
+               smoke_confirmed_raw);
+        alarm_logic_handle_smoke(runtime_smoke_confirmed_from_raw_sequence(smoke_initial_raw,
+                                                                           smoke_confirmed_raw));
+    }
+
     /*
      * TODO: Capture camera frame, run RKNN YOLO inference, pass each detection to
      * alarm_logic_handle_detection(), then call alarm_logic_end_frame().
@@ -566,6 +646,10 @@ int main(int argc, char **argv)
     if (config.panic_enabled)
     {
         sensor_input_init(AMTECH_PANIC_GPIO_PIN);
+    }
+    if (config.smoke_enabled)
+    {
+        sensor_input_init(AMTECH_SMOKE_GPIO_PIN);
     }
 #endif
     schedule_set_armed_window(23, 0, 6, 0);

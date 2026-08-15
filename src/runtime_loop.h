@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define AMTECH_RUNTIME_MAX_WATCHED_PINS 5
+#define AMTECH_RUNTIME_MAX_WATCHED_PINS 6
 
 typedef struct
 {
@@ -21,6 +21,7 @@ int runtime_build_watched_pins(const amtech_config_t *config,
                                int max_watched_pins);
 int runtime_process_configured_shutters(const amtech_config_t *config);
 int runtime_panic_triggered_from_raw(int raw_value);
+int runtime_smoke_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value);
 
 #ifdef __cplusplus
 }

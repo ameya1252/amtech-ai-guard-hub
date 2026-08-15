@@ -218,6 +218,25 @@ static void check_person_retrigger(void)
 #endif
 }
 
+static void check_smoke_triggers_regardless_of_armed_state(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(0);
+    alarm_logic_handle_smoke(1);
+
+    check_int("smoke detector while disarmed triggers immediately", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_smoke(1);
+
+    check_int("smoke detector while armed triggers immediately", alarm_logic_is_triggered(), 1);
+}
+
 int main(void)
 {
 #ifdef SIMULATE_GPIO
@@ -354,6 +373,8 @@ int main(void)
     alarm_logic_handle_panic(1);
 
     check_int("panic button while armed triggers immediately", alarm_logic_is_triggered(), 1);
+
+    check_smoke_triggers_regardless_of_armed_state();
 
     check_panic_retrigger_and_notification_cooldown();
     check_outputs_reactivate_when_notification_is_suppressed();
