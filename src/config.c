@@ -59,6 +59,10 @@ void amtech_config_set_defaults(amtech_config_t *config)
     config->panic_enabled = 1;
     config->smoke_enabled = 0;
     snprintf(config->modem_device, sizeof(config->modem_device), "%s", AMTECH_DEFAULT_MODEM_DEVICE);
+    snprintf(config->alert_contact_number,
+             sizeof(config->alert_contact_number),
+             "%s",
+             AMTECH_DEFAULT_ALERT_CONTACT_NUMBER);
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -78,9 +82,10 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s\n",
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s ALERT_CONTACT_NUMBER=%s\n",
                    path,
-                   config->modem_device);
+                   config->modem_device,
+                   config->alert_contact_number);
             return 0;
         }
 
@@ -154,6 +159,17 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
             snprintf(config->modem_device, sizeof(config->modem_device), "%s", value);
         }
+        else if (strcmp(key, "ALERT_CONTACT_NUMBER") == 0)
+        {
+            if (value[0] == '\0' || strlen(value) >= sizeof(config->alert_contact_number))
+            {
+                printf("Config: invalid ALERT_CONTACT_NUMBER, keeping %s\n",
+                       config->alert_contact_number);
+                continue;
+            }
+
+            snprintf(config->alert_contact_number, sizeof(config->alert_contact_number), "%s", value);
+        }
         else
         {
             printf("Config: ignoring unknown key %s\n", key);
@@ -169,10 +185,11 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s ALERT_CONTACT_NUMBER=%s\n",
            config->shutter_count,
            config->panic_enabled,
            config->smoke_enabled,
-           config->modem_device);
+           config->modem_device,
+           config->alert_contact_number);
     return 0;
 }

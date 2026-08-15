@@ -1,5 +1,6 @@
 #include "alarm_logic.h"
 
+#include "alert_dispatch.h"
 #include "gpio_control.h"
 #include "notify_client.h"
 
@@ -131,6 +132,7 @@ void trigger_alarm(void)
     if (should_send_notification)
     {
         notify_send_alert(alarm_shop_id, pending_alarm_event_type);
+        alert_dispatch_send(pending_alarm_event_type);
         notification_sent_this_incident = 1;
         notification_elapsed_ms = 0;
     }
@@ -170,6 +172,8 @@ void alarm_logic_tick(unsigned int elapsed_ms)
     {
         return;
     }
+
+    alert_dispatch_tick(elapsed_ms);
 
     if (alarm_triggered &&
         notification_sent_this_incident &&

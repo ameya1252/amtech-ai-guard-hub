@@ -50,8 +50,22 @@ int main(void)
               modem_get_registration_status(),
               MODEM_STATE_REGISTERED);
 
-    check_int("HAL SMS stub is not implemented", modem_send_sms("+911234567890", "test"), -1);
-    check_int("HAL voice stub is not implemented", modem_make_voice_call("+911234567890"), -1);
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
+
+    check_int("HAL SMS simulation succeeds", modem_send_sms("+911234567890", "test"), 0);
+    check_int("HAL voice call simulation starts", modem_make_voice_call("+911234567890"), 0);
+    check_int("HAL voice call active after start", modem_voice_call_is_active(), 1);
+    modem_hal_tick(44000);
+    check_int("HAL voice call still active before safety timeout", modem_voice_call_is_active(), 1);
+    modem_hal_tick(1000);
+    check_int("HAL voice call cleared at safety timeout", modem_voice_call_is_active(), 0);
+#ifdef SIMULATE_MODEM
+    check_int("HAL simulated SMS count", modem_get_simulated_sms_count(), 1);
+    check_int("HAL simulated call count", modem_get_simulated_call_count(), 1);
+    check_int("HAL simulated hangup count", modem_get_simulated_hangup_count(), 1);
+#endif
 
     if (failures == 0)
     {

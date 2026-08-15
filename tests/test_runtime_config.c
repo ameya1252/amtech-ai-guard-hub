@@ -184,6 +184,9 @@ int main(void)
     check_int("missing config default panic enabled", config.panic_enabled, 1);
     check_int("missing config default smoke disabled", config.smoke_enabled, 0);
     check_string("missing config default modem device", config.modem_device, AMTECH_DEFAULT_MODEM_DEVICE);
+    check_string("missing config default alert contact",
+                 config.alert_contact_number,
+                 AMTECH_DEFAULT_ALERT_CONTACT_NUMBER);
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -191,7 +194,7 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_NUMBER=+919999999999\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
@@ -199,6 +202,7 @@ int main(void)
     check_int("two-shutter config panic enabled", config.panic_enabled, 1);
     check_int("two-shutter config smoke enabled", config.smoke_enabled, 1);
     check_string("configured modem device", config.modem_device, "/dev/ttyS1");
+    check_string("configured alert contact", config.alert_contact_number, "+919999999999");
 
     amtech_config_set_defaults(&config);
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);

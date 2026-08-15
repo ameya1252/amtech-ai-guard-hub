@@ -1,5 +1,6 @@
 #include "alarm_logic.h"
 #include "gpio_control.h"
+#include "modem_hal.h"
 #include "notify_client.h"
 
 #include <stdio.h>
@@ -29,6 +30,9 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #ifdef SIMULATE_NETWORK
     notify_reset_simulated_send_count();
 #endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_shop_id("amtech-demo-shop");
@@ -42,6 +46,10 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #endif
 #ifdef SIMULATE_NETWORK
     check_int("panic first trigger sends notification", notify_get_simulated_send_count(), 1);
+#endif
+#ifdef SIMULATE_MODEM
+    check_int("panic first trigger sends SMS", modem_get_simulated_sms_count(), 1);
+    check_int("panic first trigger starts voice call", modem_get_simulated_call_count(), 1);
 #endif
 
     alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
@@ -59,6 +67,14 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #ifdef SIMULATE_NETWORK
     check_int("panic second trigger inside cooldown suppresses notification",
               notify_get_simulated_send_count(),
+              1);
+#endif
+#ifdef SIMULATE_MODEM
+    check_int("panic second trigger inside cooldown suppresses SMS",
+              modem_get_simulated_sms_count(),
+              1);
+    check_int("panic second trigger inside cooldown suppresses voice call",
+              modem_get_simulated_call_count(),
               1);
 #endif
 
@@ -79,12 +95,22 @@ static void check_panic_retrigger_and_notification_cooldown(void)
               notify_get_simulated_send_count(),
               2);
 #endif
+#ifdef SIMULATE_MODEM
+    check_int("panic trigger after cooldown sends SMS",
+              modem_get_simulated_sms_count(),
+              2);
+#endif
 
     alarm_logic_reset();
     alarm_logic_handle_panic(1);
 #ifdef SIMULATE_NETWORK
     check_int("reset clears notification cooldown",
               notify_get_simulated_send_count(),
+              3);
+#endif
+#ifdef SIMULATE_MODEM
+    check_int("reset clears SIM alert cooldown",
+              modem_get_simulated_sms_count(),
               3);
 #endif
 }
@@ -97,6 +123,9 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
 #ifdef SIMULATE_NETWORK
     notify_reset_simulated_send_count();
 #endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_shop_id("amtech-demo-shop");
@@ -106,6 +135,11 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
 #ifdef SIMULATE_NETWORK
     check_int("regression first panic sends notification",
               notify_get_simulated_send_count(),
+              1);
+#endif
+#ifdef SIMULATE_MODEM
+    check_int("regression first panic sends SIM alert",
+              modem_get_simulated_sms_count(),
               1);
 #endif
 
@@ -130,6 +164,11 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
               notify_get_simulated_send_count(),
               1);
 #endif
+#ifdef SIMULATE_MODEM
+    check_int("regression second panic suppresses SIM alert too",
+              modem_get_simulated_sms_count(),
+              1);
+#endif
 }
 
 static void check_shutter_retrigger(void)
@@ -139,6 +178,9 @@ static void check_shutter_retrigger(void)
 #endif
 #ifdef SIMULATE_NETWORK
     notify_reset_simulated_send_count();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
 #endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
@@ -167,6 +209,11 @@ static void check_shutter_retrigger(void)
               notify_get_simulated_send_count(),
               1);
 #endif
+#ifdef SIMULATE_MODEM
+    check_int("shutter second trigger inside cooldown suppresses SMS",
+              modem_get_simulated_sms_count(),
+              1);
+#endif
 }
 
 static void send_three_person_frames(void)
@@ -186,6 +233,9 @@ static void check_person_retrigger(void)
 #endif
 #ifdef SIMULATE_NETWORK
     notify_reset_simulated_send_count();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
 #endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
@@ -216,12 +266,20 @@ static void check_person_retrigger(void)
               notify_get_simulated_send_count(),
               1);
 #endif
+#ifdef SIMULATE_MODEM
+    check_int("person second trigger inside cooldown suppresses SMS",
+              modem_get_simulated_sms_count(),
+              1);
+#endif
 }
 
 static void check_smoke_triggers_regardless_of_armed_state(void)
 {
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
 #endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
@@ -237,6 +295,46 @@ static void check_smoke_triggers_regardless_of_armed_state(void)
     check_int("smoke detector while armed triggers immediately", alarm_logic_is_triggered(), 1);
 }
 
+static void check_call_state_ticks_without_blocking_alarm_flow(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(0);
+
+    alarm_logic_handle_smoke(1);
+    check_int("smoke starts non-blocking voice call", modem_voice_call_is_active(), 1);
+
+    alarm_logic_handle_panic(1);
+    check_int("panic still handled while voice call active", alarm_logic_is_triggered(), 1);
+#ifdef SIMULATE_GPIO
+    check_int("panic reactivates siren while voice call active",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              0);
+#endif
+#ifdef SIMULATE_MODEM
+    check_int("panic inside cooldown does not start overlapping call",
+              modem_get_simulated_call_count(),
+              1);
+#endif
+
+    alarm_logic_tick(44000);
+    check_int("voice call remains active before 45 second timeout", modem_voice_call_is_active(), 1);
+    alarm_logic_tick(1000);
+    check_int("voice call clears at 45 second timeout", modem_voice_call_is_active(), 0);
+#ifdef SIMULATE_MODEM
+    check_int("voice call safety hangup sent once", modem_get_simulated_hangup_count(), 1);
+#endif
+}
+
 int main(void)
 {
 #ifdef SIMULATE_GPIO
@@ -244,6 +342,9 @@ int main(void)
 #endif
 #ifdef SIMULATE_NETWORK
     notify_reset_simulated_send_count();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
 #endif
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
@@ -380,6 +481,7 @@ int main(void)
     check_outputs_reactivate_when_notification_is_suppressed();
     check_shutter_retrigger();
     check_person_retrigger();
+    check_call_state_ticks_without_blocking_alarm_flow();
 
     if (failures == 0)
     {
