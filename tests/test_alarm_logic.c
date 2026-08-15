@@ -216,13 +216,11 @@ static void check_shutter_retrigger(void)
 #endif
 }
 
-static void send_three_person_frames(void)
+static void send_two_person_frames(void)
 {
     alarm_logic_handle_detection(0, "person", 0.80f);
     alarm_logic_end_frame();
     alarm_logic_handle_detection(0, "person", 0.81f);
-    alarm_logic_end_frame();
-    alarm_logic_handle_detection(0, "person", 0.82f);
     alarm_logic_end_frame();
 }
 
@@ -241,8 +239,8 @@ static void check_person_retrigger(void)
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
 
-    send_three_person_frames();
-    check_int("person first 3-frame trigger sets active alarm", alarm_logic_is_triggered(), 1);
+    send_two_person_frames();
+    check_int("person first 2-frame trigger sets active alarm", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
     check_int("person first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
 #endif
@@ -252,12 +250,12 @@ static void check_person_retrigger(void)
     check_int("person first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
 
-    send_three_person_frames();
+    send_two_person_frames();
 #ifdef SIMULATE_GPIO
-    check_int("person second 3-frame trigger restarts siren ON/LOW",
+    check_int("person second 2-frame trigger restarts siren ON/LOW",
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
               0);
-    check_int("person second 3-frame trigger keeps strobe ON/LOW",
+    check_int("person second 2-frame trigger keeps strobe ON/LOW",
               gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
               0);
 #endif
@@ -358,15 +356,12 @@ int main(void)
 
     alarm_logic_handle_detection(0, "person", 0.75f);
     alarm_logic_end_frame();
+    check_int("person detection does not trigger before 2 frames", alarm_logic_is_triggered(), 0);
+
     alarm_logic_handle_detection(0, "person", 0.80f);
     alarm_logic_end_frame();
 
-    check_int("person detection does not trigger before 3 frames", alarm_logic_is_triggered(), 0);
-
-    alarm_logic_handle_detection(0, "person", 0.90f);
-    alarm_logic_end_frame();
-
-    check_int("person detection triggers after 3 frames", alarm_logic_is_triggered(), 1);
+    check_int("person detection triggers after 2 frames", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
     check_int("siren turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("strobe turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
