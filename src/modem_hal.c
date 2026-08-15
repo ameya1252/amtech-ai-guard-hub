@@ -18,14 +18,17 @@
 #define MODEM_HAL_RESPONSE_SIZE 1024
 #define MODEM_HAL_COMMAND_SIZE 128
 #define MODEM_HAL_SMS_PAYLOAD_SIZE 256
+#define MODEM_HAL_SIMULATED_HISTORY_MAX 32
+#define MODEM_HAL_SIMULATED_STATUS_MAX 64
 #define MODEM_HAL_SHORT_TIMEOUT_MS 3000
 #define MODEM_HAL_SMS_TIMEOUT_MS 60000
 #define MODEM_HAL_CALL_MAX_DURATION_MS 45000U
-#define MODEM_HAL_CALL_STATUS_POLL_MS 5000U
+#define MODEM_HAL_CALL_STATUS_POLL_MS 1000U
 
 static int voice_call_active = 0;
 static unsigned int voice_call_elapsed_ms = 0;
 static unsigned int voice_call_status_elapsed_ms = 0;
+static modem_call_status_t voice_call_status = MODEM_CALL_STATUS_IDLE;
 
 #ifdef SIMULATE_MODEM
 static int simulated_sms_count = 0;
@@ -34,6 +37,11 @@ static int simulated_hangup_count = 0;
 static char simulated_last_sms_number[AMTECH_ALERT_CONTACT_NUMBER_MAX];
 static char simulated_last_sms_message[MODEM_HAL_SMS_PAYLOAD_SIZE];
 static char simulated_last_call_number[AMTECH_ALERT_CONTACT_NUMBER_MAX];
+static char simulated_sms_numbers[MODEM_HAL_SIMULATED_HISTORY_MAX][AMTECH_ALERT_CONTACT_NUMBER_MAX];
+static char simulated_call_numbers[MODEM_HAL_SIMULATED_HISTORY_MAX][AMTECH_ALERT_CONTACT_NUMBER_MAX];
+static modem_call_status_t simulated_status_sequence[MODEM_HAL_SIMULATED_STATUS_MAX];
+static int simulated_status_sequence_count = 0;
+static int simulated_status_sequence_index = 0;
 #endif
 
 int modem_get_registration_status(void)
@@ -244,6 +252,41 @@ static int send_serial_command(int fd, const char *command, const char *expected
 
     return read_until(fd, command, expected, timeout_ms, response, sizeof(response));
 }
+
+static modem_call_status_t parse_clcc_status(const char *response)
+{
+    const char *line;
+    int id;
+    int dir;
+    int stat;
+    int mode;
+    int mpty;
+
+    if (response == NULL || strstr(response, "+CLCC:") == NULL)
+    {
+        return MODEM_CALL_STATUS_ENDED;
+    }
+
+    line = strstr(response, "+CLCC:");
+    if (sscanf(line, "+CLCC: %d,%d,%d,%d,%d", &id, &dir, &stat, &mode, &mpty) != 5)
+    {
+        return MODEM_CALL_STATUS_FAILED;
+    }
+
+    switch (stat)
+    {
+    case 0:
+        return MODEM_CALL_STATUS_ACTIVE;
+    case 2:
+        return MODEM_CALL_STATUS_DIALING;
+    case 3:
+        return MODEM_CALL_STATUS_RINGING;
+    case 6:
+        return MODEM_CALL_STATUS_ENDED;
+    default:
+        return MODEM_CALL_STATUS_FAILED;
+    }
+}
 #endif
 
 int modem_send_sms(const char *number, const char *message)
@@ -258,6 +301,13 @@ int modem_send_sms(const char *number, const char *message)
     printf("Modem HAL: would send SMS to %s: %s\n", number, message);
     snprintf(simulated_last_sms_number, sizeof(simulated_last_sms_number), "%s", number);
     snprintf(simulated_last_sms_message, sizeof(simulated_last_sms_message), "%s", message);
+    if (simulated_sms_count < MODEM_HAL_SIMULATED_HISTORY_MAX)
+    {
+        snprintf(simulated_sms_numbers[simulated_sms_count],
+                 sizeof(simulated_sms_numbers[simulated_sms_count]),
+                 "%s",
+                 number);
+    }
     simulated_sms_count++;
     return 0;
 #else
@@ -363,6 +413,13 @@ int modem_make_voice_call(const char *number)
 #ifdef SIMULATE_MODEM
     printf("Modem HAL: would start voice call to %s with %s\n", number, command);
     snprintf(simulated_last_call_number, sizeof(simulated_last_call_number), "%s", number);
+    if (simulated_call_count < MODEM_HAL_SIMULATED_HISTORY_MAX)
+    {
+        snprintf(simulated_call_numbers[simulated_call_count],
+                 sizeof(simulated_call_numbers[simulated_call_count]),
+                 "%s",
+                 number);
+    }
     simulated_call_count++;
 #else
     if (sim_modem_send_at(command, response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
@@ -382,7 +439,36 @@ int modem_make_voice_call(const char *number)
     voice_call_active = 1;
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
+    voice_call_status = MODEM_CALL_STATUS_DIALING;
     return 0;
+}
+
+void modem_hangup_voice_call(void)
+{
+#ifndef SIMULATE_MODEM
+    char response[MODEM_HAL_RESPONSE_SIZE];
+#endif
+
+    if (!voice_call_active)
+    {
+        voice_call_status = MODEM_CALL_STATUS_IDLE;
+        return;
+    }
+
+#ifdef SIMULATE_MODEM
+    printf("Modem HAL: would send ATH to end current call\n");
+    simulated_hangup_count++;
+#else
+    if (sim_modem_send_at("ATH", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
+    {
+        printf("Modem HAL: warning: ATH failed while ending call\n");
+    }
+#endif
+
+    voice_call_active = 0;
+    voice_call_elapsed_ms = 0;
+    voice_call_status_elapsed_ms = 0;
+    voice_call_status = MODEM_CALL_STATUS_ENDED;
 }
 
 void modem_hal_tick(unsigned int elapsed_ms)
@@ -420,6 +506,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
         voice_call_active = 0;
         voice_call_elapsed_ms = 0;
         voice_call_status_elapsed_ms = 0;
+        voice_call_status = MODEM_CALL_STATUS_ENDED;
         return;
     }
 
@@ -440,13 +527,33 @@ void modem_hal_tick(unsigned int elapsed_ms)
 
 #ifdef SIMULATE_MODEM
     printf("Modem HAL: would poll voice call status with AT+CLCC\n");
+    if (simulated_status_sequence_index < simulated_status_sequence_count)
+    {
+        voice_call_status = simulated_status_sequence[simulated_status_sequence_index];
+        simulated_status_sequence_index++;
+    }
+    else
+    {
+        voice_call_status = MODEM_CALL_STATUS_RINGING;
+    }
+
+    if (voice_call_status == MODEM_CALL_STATUS_ENDED ||
+        voice_call_status == MODEM_CALL_STATUS_FAILED)
+    {
+        voice_call_active = 0;
+        voice_call_elapsed_ms = 0;
+        voice_call_status_elapsed_ms = 0;
+    }
 #else
     if (sim_modem_send_at("AT+CLCC", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
     {
+        voice_call_status = MODEM_CALL_STATUS_FAILED;
         return;
     }
 
-    if (strstr(response, "+CLCC:") == NULL)
+    voice_call_status = parse_clcc_status(response);
+    if (voice_call_status == MODEM_CALL_STATUS_ENDED ||
+        voice_call_status == MODEM_CALL_STATUS_FAILED)
     {
         printf("Modem HAL: voice call no longer active\n");
         voice_call_active = 0;
@@ -459,6 +566,11 @@ void modem_hal_tick(unsigned int elapsed_ms)
 int modem_voice_call_is_active(void)
 {
     return voice_call_active;
+}
+
+modem_call_status_t modem_get_voice_call_status(void)
+{
+    return voice_call_status;
 }
 
 #ifdef SIMULATE_MODEM
@@ -492,16 +604,70 @@ const char *modem_get_simulated_last_call_number(void)
     return simulated_last_call_number;
 }
 
+const char *modem_get_simulated_sms_number_at(int index)
+{
+    if (index < 0 || index >= simulated_sms_count || index >= MODEM_HAL_SIMULATED_HISTORY_MAX)
+    {
+        return "";
+    }
+
+    return simulated_sms_numbers[index];
+}
+
+const char *modem_get_simulated_call_number_at(int index)
+{
+    if (index < 0 || index >= simulated_call_count || index >= MODEM_HAL_SIMULATED_HISTORY_MAX)
+    {
+        return "";
+    }
+
+    return simulated_call_numbers[index];
+}
+
+void modem_set_simulated_call_status_sequence(const modem_call_status_t *statuses, int count)
+{
+    int i;
+
+    simulated_status_sequence_count = 0;
+    simulated_status_sequence_index = 0;
+
+    if (statuses == NULL || count <= 0)
+    {
+        return;
+    }
+
+    if (count > MODEM_HAL_SIMULATED_STATUS_MAX)
+    {
+        count = MODEM_HAL_SIMULATED_STATUS_MAX;
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        simulated_status_sequence[i] = statuses[i];
+    }
+    simulated_status_sequence_count = count;
+}
+
 void modem_reset_simulated_state(void)
 {
+    int i;
+
     simulated_sms_count = 0;
     simulated_call_count = 0;
     simulated_hangup_count = 0;
     simulated_last_sms_number[0] = '\0';
     simulated_last_sms_message[0] = '\0';
     simulated_last_call_number[0] = '\0';
+    for (i = 0; i < MODEM_HAL_SIMULATED_HISTORY_MAX; i++)
+    {
+        simulated_sms_numbers[i][0] = '\0';
+        simulated_call_numbers[i][0] = '\0';
+    }
+    simulated_status_sequence_count = 0;
+    simulated_status_sequence_index = 0;
     voice_call_active = 0;
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
+    voice_call_status = MODEM_CALL_STATUS_IDLE;
 }
 #endif

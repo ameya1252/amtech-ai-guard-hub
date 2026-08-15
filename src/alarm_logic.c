@@ -70,6 +70,7 @@ void alarm_logic_init(int gpio_pin)
     consecutive_person_frames = 0;
     person_seen_this_frame = 0;
     alarm_triggered = 0;
+    alert_dispatch_reset();
 
     if (init_alarm_output_off(alarm_gpio_pin, "siren") != 0)
     {
@@ -163,6 +164,7 @@ void alarm_logic_reset(void)
         gpio_write_value(strobe_gpio_pin, 1);
     }
 
+    alert_dispatch_reset();
     printf("Alarm: reset\n");
 }
 

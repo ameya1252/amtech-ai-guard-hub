@@ -48,6 +48,19 @@ static int parse_int_value(const char *key, const char *value, int *out)
     return 0;
 }
 
+static void set_alert_contact(amtech_config_t *config, int index, const char *value)
+{
+    if (config == NULL || index < 0 || index >= AMTECH_ALERT_CONTACT_COUNT)
+    {
+        return;
+    }
+
+    snprintf(config->alert_contacts[index],
+             sizeof(config->alert_contacts[index]),
+             "%s",
+             value);
+}
+
 void amtech_config_set_defaults(amtech_config_t *config)
 {
     if (config == NULL)
@@ -59,10 +72,9 @@ void amtech_config_set_defaults(amtech_config_t *config)
     config->panic_enabled = 1;
     config->smoke_enabled = 0;
     snprintf(config->modem_device, sizeof(config->modem_device), "%s", AMTECH_DEFAULT_MODEM_DEVICE);
-    snprintf(config->alert_contact_number,
-             sizeof(config->alert_contact_number),
-             "%s",
-             AMTECH_DEFAULT_ALERT_CONTACT_NUMBER);
+    set_alert_contact(config, 0, AMTECH_DEFAULT_ALERT_CONTACT_1);
+    set_alert_contact(config, 1, AMTECH_DEFAULT_ALERT_CONTACT_2);
+    set_alert_contact(config, 2, AMTECH_DEFAULT_ALERT_CONTACT_3);
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -82,10 +94,12 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s ALERT_CONTACT_NUMBER=%s\n",
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s\n",
                    path,
                    config->modem_device,
-                   config->alert_contact_number);
+                   config->alert_contacts[0],
+                   config->alert_contacts[1],
+                   config->alert_contacts[2]);
             return 0;
         }
 
@@ -159,16 +173,25 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
             snprintf(config->modem_device, sizeof(config->modem_device), "%s", value);
         }
-        else if (strcmp(key, "ALERT_CONTACT_NUMBER") == 0)
+        else if (strcmp(key, "ALERT_CONTACT_1") == 0 ||
+                 strcmp(key, "ALERT_CONTACT_2") == 0 ||
+                 strcmp(key, "ALERT_CONTACT_3") == 0)
         {
-            if (value[0] == '\0' || strlen(value) >= sizeof(config->alert_contact_number))
+            int contact_index = key[strlen("ALERT_CONTACT_")] - '1';
+
+            if (value[0] == '\0' || strlen(value) >= AMTECH_ALERT_CONTACT_NUMBER_MAX)
             {
-                printf("Config: invalid ALERT_CONTACT_NUMBER, keeping %s\n",
-                       config->alert_contact_number);
+                printf("Config: invalid %s, keeping %s\n",
+                       key,
+                       config->alert_contacts[contact_index]);
                 continue;
             }
 
-            snprintf(config->alert_contact_number, sizeof(config->alert_contact_number), "%s", value);
+            set_alert_contact(config, contact_index, value);
+        }
+        else if (strcmp(key, "ALERT_CONTACT_NUMBER") == 0)
+        {
+            printf("Config: ALERT_CONTACT_NUMBER is deprecated; use ALERT_CONTACT_1/2/3\n");
         }
         else
         {
@@ -185,11 +208,13 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s ALERT_CONTACT_NUMBER=%s\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s\n",
            config->shutter_count,
            config->panic_enabled,
            config->smoke_enabled,
            config->modem_device,
-           config->alert_contact_number);
+           config->alert_contacts[0],
+           config->alert_contacts[1],
+           config->alert_contacts[2]);
     return 0;
 }

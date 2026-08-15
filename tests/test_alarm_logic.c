@@ -48,7 +48,7 @@ static void check_panic_retrigger_and_notification_cooldown(void)
     check_int("panic first trigger sends notification", notify_get_simulated_send_count(), 1);
 #endif
 #ifdef SIMULATE_MODEM
-    check_int("panic first trigger sends SMS", modem_get_simulated_sms_count(), 1);
+    check_int("panic first trigger sends SMS to all contacts", modem_get_simulated_sms_count(), 3);
     check_int("panic first trigger starts voice call", modem_get_simulated_call_count(), 1);
 #endif
 
@@ -72,7 +72,7 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #ifdef SIMULATE_MODEM
     check_int("panic second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
-              1);
+               3);
     check_int("panic second trigger inside cooldown suppresses voice call",
               modem_get_simulated_call_count(),
               1);
@@ -98,7 +98,7 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #ifdef SIMULATE_MODEM
     check_int("panic trigger after cooldown sends SMS",
               modem_get_simulated_sms_count(),
-              2);
+               6);
 #endif
 
     alarm_logic_reset();
@@ -111,7 +111,7 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #ifdef SIMULATE_MODEM
     check_int("reset clears SIM alert cooldown",
               modem_get_simulated_sms_count(),
-              3);
+               9);
 #endif
 }
 
@@ -140,7 +140,7 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
 #ifdef SIMULATE_MODEM
     check_int("regression first panic sends SIM alert",
               modem_get_simulated_sms_count(),
-              1);
+               3);
 #endif
 
     alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
@@ -167,7 +167,7 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
 #ifdef SIMULATE_MODEM
     check_int("regression second panic suppresses SIM alert too",
               modem_get_simulated_sms_count(),
-              1);
+               3);
 #endif
 }
 
@@ -212,7 +212,7 @@ static void check_shutter_retrigger(void)
 #ifdef SIMULATE_MODEM
     check_int("shutter second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
-              1);
+               3);
 #endif
 }
 
@@ -269,7 +269,7 @@ static void check_person_retrigger(void)
 #ifdef SIMULATE_MODEM
     check_int("person second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
-              1);
+               3);
 #endif
 }
 
@@ -327,11 +327,11 @@ static void check_call_state_ticks_without_blocking_alarm_flow(void)
 #endif
 
     alarm_logic_tick(44000);
-    check_int("voice call remains active before 45 second timeout", modem_voice_call_is_active(), 1);
+    check_int("voice escalation remains active after first no-answer timeout", modem_voice_call_is_active(), 1);
     alarm_logic_tick(1000);
-    check_int("voice call clears at 45 second timeout", modem_voice_call_is_active(), 0);
+    check_int("voice escalation continues with next attempt", modem_voice_call_is_active(), 1);
 #ifdef SIMULATE_MODEM
-    check_int("voice call safety hangup sent once", modem_get_simulated_hangup_count(), 1);
+    check_int("voice escalation hung up first unanswered attempt", modem_get_simulated_hangup_count(), 1);
 #endif
 }
 

@@ -18,13 +18,29 @@ int modem_make_voice_call(const char *number);
 void modem_hal_tick(unsigned int elapsed_ms);
 int modem_voice_call_is_active(void);
 
+typedef enum
+{
+    MODEM_CALL_STATUS_IDLE = 0,
+    MODEM_CALL_STATUS_DIALING,
+    MODEM_CALL_STATUS_RINGING,
+    MODEM_CALL_STATUS_ACTIVE,
+    MODEM_CALL_STATUS_ENDED,
+    MODEM_CALL_STATUS_FAILED
+} modem_call_status_t;
+
+modem_call_status_t modem_get_voice_call_status(void);
+void modem_hangup_voice_call(void);
+
 #ifdef SIMULATE_MODEM
 int modem_get_simulated_sms_count(void);
 int modem_get_simulated_call_count(void);
 int modem_get_simulated_hangup_count(void);
+const char *modem_get_simulated_sms_number_at(int index);
+const char *modem_get_simulated_call_number_at(int index);
 const char *modem_get_simulated_last_sms_number(void);
 const char *modem_get_simulated_last_sms_message(void);
 const char *modem_get_simulated_last_call_number(void);
+void modem_set_simulated_call_status_sequence(const modem_call_status_t *statuses, int count);
 void modem_reset_simulated_state(void);
 #endif
 

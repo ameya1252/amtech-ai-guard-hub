@@ -9,7 +9,10 @@ extern "C" {
 
 #define AMTECH_DEFAULT_CONFIG_PATH "/root/amtech_config.txt"
 #define AMTECH_DEFAULT_MODEM_DEVICE "/dev/ttyS5"
-#define AMTECH_DEFAULT_ALERT_CONTACT_NUMBER "+918550991121"
+#define AMTECH_ALERT_CONTACT_COUNT 3
+#define AMTECH_DEFAULT_ALERT_CONTACT_1 "+918550991121"
+#define AMTECH_DEFAULT_ALERT_CONTACT_2 "+919922434811"
+#define AMTECH_DEFAULT_ALERT_CONTACT_3 "+919922435710"
 #define AMTECH_MODEM_DEVICE_MAX 64
 #define AMTECH_ALERT_CONTACT_NUMBER_MAX 24
 
@@ -22,8 +25,9 @@ typedef struct
     /*
      * V1 local placeholder. Later this should come from the app/backend's
      * stored per-shop emergency contact list instead of a device config file.
+     * Contacts are ordered by call-escalation priority.
      */
-    char alert_contact_number[AMTECH_ALERT_CONTACT_NUMBER_MAX];
+    char alert_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
 } amtech_config_t;
 
 void amtech_config_set_defaults(amtech_config_t *config);
