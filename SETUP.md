@@ -227,6 +227,13 @@ Baseline 480 letterbox: TP=27 FP=0 TN=2 FN=25, recall=51.9%, avg total=848ms
 
 CLAHE is enabled by default because it gained five net true positives with no new false positives. A direct-JPEG optimization was tested, but it changed detector behavior and did not keep the recall gain, so production keeps the PPM + ffmpeg JPEG encode path.
 
+Production model decision:
+
+- Use YOLOv5s with `model/yolov5.rknn`.
+- YOLO11n was tested on real RV1106 hardware and failed to initialize with an unsupported `MatMul` op, so it is not compatible with the current board/runtime.
+- YOLOv5m was compatible, but slower and less accurate on the AMTECH dataset: `57.7%` recall and `1492ms` average dataset-frame time with CLAHE, versus YOLOv5s at `61.5%` recall and `1282ms`.
+- Keep YOLOv5s + 480x480 letterbox + CLAHE as the production detector unless a future model beats these real-board numbers.
+
 Testing-only force armed mode:
 
 ```sh

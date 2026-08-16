@@ -210,6 +210,14 @@ CLAHE avg:    preprocess=297ms, CLAHE=117ms, encode=294ms, inference=573ms, tota
 
 A faster direct-JPEG CLAHE output path was tested using `stb_image_write`, but it changed the detector outputs and did not preserve the +5 TP improvement. Production therefore keeps the slightly slower PPM-to-ffmpeg-JPEG encode step because it is the accuracy-proven path.
 
+Model selection is now closed for production:
+
+- YOLO11n was downloaded, converted, and built as a real RV1106 test, but it failed during `rknn_init` on the board with an unsupported `MatMul` operation. Earlier YOLOv8/YOLOv10 tests failed in the same operator-support family, so newer attention/MatMul-based YOLO generations are not considered production candidates for this RV1106 runtime.
+- YOLOv5m was tested because it stays in the RV1106-compatible YOLOv5 family. It initialized and ran on the board, but under the same 480 letterbox + CLAHE pipeline it reached only `57.7%` recall with `1492ms` average dataset-frame time.
+- Current YOLOv5s + 480 letterbox + CLAHE remains better: `61.5%` recall with `1282ms` average dataset-frame time.
+
+Final production model choice: YOLOv5s + 480x480 letterbox + CLAHE.
+
 Real paths used by the camera module:
 
 ```text
