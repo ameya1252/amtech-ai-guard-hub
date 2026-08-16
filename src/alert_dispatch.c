@@ -9,14 +9,12 @@
 
 #define ALERT_CALL_ATTEMPTS_PER_CONTACT 2
 #define ALERT_CALL_ATTEMPT_TIMEOUT_MS 30000U
-#define ALERT_CALL_ANSWER_CONFIRM_MS 3000U
 
 static alert_call_escalation_state_t escalation_state = ALERT_CALL_ESCALATION_IDLE;
 static char escalation_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
 static int escalation_contact_index = 0;
 static int escalation_attempt = 0;
 static unsigned int escalation_attempt_elapsed_ms = 0;
-static unsigned int escalation_answer_confirm_ms = 0;
 
 static const char *alert_config_path(void)
 {
@@ -93,7 +91,6 @@ static void clear_escalation(void)
     escalation_contact_index = 0;
     escalation_attempt = 0;
     escalation_attempt_elapsed_ms = 0;
-    escalation_answer_confirm_ms = 0;
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
     {
         escalation_contacts[i][0] = '\0';
@@ -128,7 +125,6 @@ static int start_current_call_attempt(void)
         {
             escalation_state = ALERT_CALL_ESCALATION_WAITING;
             escalation_attempt_elapsed_ms = 0;
-            escalation_answer_confirm_ms = 0;
             return 0;
         }
 
@@ -146,7 +142,6 @@ static int start_current_call_attempt(void)
 
     escalation_state = ALERT_CALL_ESCALATION_DONE;
     escalation_attempt_elapsed_ms = 0;
-    escalation_answer_confirm_ms = 0;
     printf("Alert dispatch: call escalation complete, no more contacts\n");
     return 0;
 }
@@ -225,7 +220,6 @@ void alert_dispatch_tick(unsigned int elapsed_ms)
 
     if (elapsed_ms == 0 ||
         escalation_state == ALERT_CALL_ESCALATION_IDLE ||
-        escalation_state == ALERT_CALL_ESCALATION_ANSWERED ||
         escalation_state == ALERT_CALL_ESCALATION_DONE ||
         escalation_state == ALERT_CALL_ESCALATION_FAILED)
     {
@@ -245,39 +239,10 @@ void alert_dispatch_tick(unsigned int elapsed_ms)
 
     if (call_status == MODEM_CALL_STATUS_ACTIVE)
     {
-        if (escalation_state != ALERT_CALL_ESCALATION_CONFIRMING_ANSWER)
+        if (escalation_attempt_elapsed_ms < ALERT_CALL_ATTEMPT_TIMEOUT_MS)
         {
-            printf("Alert dispatch: contact %d call active, confirming answer for %u ms\n",
-                   escalation_contact_index + 1,
-                   ALERT_CALL_ANSWER_CONFIRM_MS);
-            escalation_state = ALERT_CALL_ESCALATION_CONFIRMING_ANSWER;
-            escalation_answer_confirm_ms = 0;
+            return;
         }
-
-        if (elapsed_ms > ALERT_CALL_ANSWER_CONFIRM_MS - escalation_answer_confirm_ms)
-        {
-            escalation_answer_confirm_ms = ALERT_CALL_ANSWER_CONFIRM_MS;
-        }
-        else
-        {
-            escalation_answer_confirm_ms += elapsed_ms;
-        }
-
-        if (escalation_answer_confirm_ms >= ALERT_CALL_ANSWER_CONFIRM_MS)
-        {
-            printf("Alert dispatch: contact %d answered, stopping escalation\n",
-                   escalation_contact_index + 1);
-            escalation_state = ALERT_CALL_ESCALATION_ANSWERED;
-        }
-        return;
-    }
-
-    if (escalation_state == ALERT_CALL_ESCALATION_CONFIRMING_ANSWER)
-    {
-        printf("Alert dispatch: contact %d active state ended before answer confirmation\n",
-               escalation_contact_index + 1);
-        advance_to_next_call_attempt();
-        return;
     }
 
     if (call_status == MODEM_CALL_STATUS_ENDED ||
