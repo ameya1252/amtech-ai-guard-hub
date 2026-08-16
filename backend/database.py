@@ -66,7 +66,6 @@ class Camera(Base):
     __tablename__ = "cameras"
     __table_args__ = (
         UniqueConstraint("shop_id", "slot_number", name="uq_cameras_shop_slot"),
-        UniqueConstraint("camera_serial", name="uq_cameras_camera_serial"),
     )
 
     id = Column(String(128), primary_key=True)
@@ -187,6 +186,9 @@ def run_migrations():
     shop_columns = {column["name"] for column in inspector.get_columns("shops")}
     alert_columns = {column["name"] for column in inspector.get_columns("alerts")}
     with engine.begin() as connection:
+        if not _database_url.startswith("sqlite:"):
+            connection.execute(text("ALTER TABLE cameras DROP CONSTRAINT IF EXISTS uq_cameras_camera_serial"))
+
         if "armed" not in shop_columns:
             default_value = "0" if _database_url.startswith("sqlite:") else "false"
             connection.execute(text(f"ALTER TABLE shops ADD COLUMN armed BOOLEAN NOT NULL DEFAULT {default_value}"))

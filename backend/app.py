@@ -681,18 +681,6 @@ def register_camera(shop_id):
                 "camera_serial": payload["camera_serial"],
             }), 404
 
-        existing_camera = (
-            db.query(Camera)
-            .filter(Camera.camera_serial == payload["camera_serial"])
-            .first()
-        )
-        if existing_camera is not None and existing_camera.shop_id != shop.id:
-            return jsonify({
-                "ok": False,
-                "error": "camera_serial is already registered",
-                "camera_serial": payload["camera_serial"],
-            }), 409
-
         camera = (
             db.query(Camera)
             .filter(Camera.shop_id == shop.id, Camera.slot_number == payload["slot_number"])
@@ -718,7 +706,7 @@ def register_camera(shop_id):
         db.rollback()
         return jsonify({
             "ok": False,
-            "error": "camera_serial or slot_number is already registered",
+            "error": "slot_number is already registered",
             "camera_serial": payload["camera_serial"],
             "slot_number": payload["slot_number"],
         }), 409

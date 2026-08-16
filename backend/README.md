@@ -158,6 +158,8 @@ Content-Type: application/json
 
 For current test-scale/admin seeding, the same endpoint can create a missing inventory record if `camera_ip`, `camera_username`, and `camera_password` are also supplied. The normal owner app should not send those fields.
 
+Camera assignment is currently unique per shop slot, not globally unique per serial, so repeated pilot/test onboarding can reuse the seeded `CAM-0001` and `CAM-0002` records without exposing camera credentials. Before production, add a stricter ownership/claiming flow if one physical camera must be locked to one shop.
+
 ```http
 GET /shop/{shop_id}/cameras
 Authorization: Bearer {token}
