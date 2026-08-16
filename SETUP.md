@@ -146,6 +146,47 @@ For local simulation tests, use the relevant simulation flags:
 -DSIMULATE_GPIO -DSIMULATE_MODEM -DSIMULATE_CAMERA
 ```
 
+## Runtime Autostart On Board Boot
+
+The Luckfox Buildroot image uses BusyBox init. `/etc/inittab` runs `/etc/init.d/rcS`, and `rcS` starts every `/etc/init.d/S??*` script in numeric order.
+
+Install the AMTECH runtime startup script:
+
+```sh
+scp scripts/S95runtime_loop root@<board-ip>:/etc/init.d/S95runtime_loop
+ssh root@<board-ip> "chmod +x /etc/init.d/S95runtime_loop"
+```
+
+On the deployed board, the runtime binary is expected at:
+
+```text
+/root/runtime_loop
+```
+
+The startup script logs to:
+
+```text
+/root/runtime_loop.log
+```
+
+This board's `/var/log` is a symlink to `/tmp`, so `/var/log` is not persistent across reboot. `/root/runtime_loop.log` is used instead.
+
+Production autostart does not use `--force-armed`. The system should arm through schedule or authorized SMS commands, not the testing-only force-armed override.
+
+Useful commands on the board:
+
+```sh
+/etc/init.d/S95runtime_loop start
+/etc/init.d/S95runtime_loop stop
+/etc/init.d/S95runtime_loop restart
+/etc/init.d/S95runtime_loop status
+tail -200 /root/runtime_loop.log
+```
+
+The script includes a small restart loop: if `runtime_loop` crashes, it logs the exit and restarts after 5 seconds. Running `stop` creates a stop marker before killing the process, so intentional stops do not immediately restart.
+
+At boot, the script waits up to 90 seconds for the configured `MODEM_DEVICE` path, defaulting to `/dev/ttyS5`, before starting `runtime_loop`. On the tested board, `/dev/ttyS5` can appear later than the network/SSH services. If the modem node still does not exist after that wait, it logs a warning and starts anyway so GPIO alarm protection can still run.
+
 ## Camera Detection
 
 Runtime camera detection is enabled per camera only when both its enabled key and RTSP URL are set.

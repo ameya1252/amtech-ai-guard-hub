@@ -1,0 +1,140 @@
+#!/bin/sh
+#
+# AMTECH AI Guard Hub runtime autostart for Buildroot/BusyBox init.
+#
+# Buildroot's /etc/init.d/rcS runs S??* scripts in numeric order. This script is
+# intentionally late so networking, udev, ssh, and device nodes are already up.
+
+DAEMON=/root/runtime_loop
+NAME=runtime_loop
+PIDFILE=/var/run/${NAME}.pid
+SUPERVISOR_PIDFILE=/var/run/${NAME}_supervisor.pid
+DISABLE_RESTART=/var/run/${NAME}.stop
+LOGFILE=/root/runtime_loop.log
+CONFIG=/root/amtech_config.txt
+RESTART_DELAY_SECONDS=5
+MODEM_DEVICE_DEFAULT=/dev/ttyS5
+MODEM_WAIT_SECONDS=90
+
+is_running()
+{
+	if [ -f "$PIDFILE" ]; then
+		pid="$(cat "$PIDFILE" 2>/dev/null)"
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+start()
+{
+	modem_device="$MODEM_DEVICE_DEFAULT"
+
+	if is_running; then
+		echo "$NAME already running with pid $(cat "$PIDFILE")"
+		return 0
+	fi
+
+	if [ ! -x "$DAEMON" ]; then
+		echo "$NAME: missing or not executable: $DAEMON"
+		return 1
+	fi
+
+	rm -f "$DISABLE_RESTART"
+	mkdir -p /var/run
+
+	if [ ! -f "$CONFIG" ]; then
+		echo "$NAME: warning: $CONFIG missing; runtime will use safe defaults" >> "$LOGFILE"
+	else
+		config_modem_device="$(sed -n 's/^MODEM_DEVICE=//p' "$CONFIG" | tail -n 1)"
+		[ -n "$config_modem_device" ] && modem_device="$config_modem_device"
+	fi
+
+	waited=0
+	while [ ! -e "$modem_device" ] && [ "$waited" -lt "$MODEM_WAIT_SECONDS" ]; do
+		[ "$waited" = 0 ] && echo "$NAME: waiting for modem device $modem_device" >> "$LOGFILE"
+		sleep 1
+		waited=$((waited + 1))
+	done
+
+	if [ ! -e "$modem_device" ]; then
+		echo "$NAME: warning: modem device $modem_device still missing after ${MODEM_WAIT_SECONDS}s; starting anyway" >> "$LOGFILE"
+	fi
+
+	echo "Starting $NAME"
+	(
+		while [ ! -f "$DISABLE_RESTART" ]; do
+			echo "[$(date '+%Y-%m-%d %H:%M:%S')] starting $DAEMON" >> "$LOGFILE"
+			"$DAEMON" >> "$LOGFILE" 2>&1 &
+			child_pid=$!
+			echo "$child_pid" > "$PIDFILE"
+			wait "$child_pid"
+			exit_code=$?
+			rm -f "$PIDFILE"
+			echo "[$(date '+%Y-%m-%d %H:%M:%S')] $NAME exited with code $exit_code" >> "$LOGFILE"
+			[ -f "$DISABLE_RESTART" ] && break
+			sleep "$RESTART_DELAY_SECONDS"
+		done
+		rm -f "$SUPERVISOR_PIDFILE"
+	) &
+	echo "$!" > "$SUPERVISOR_PIDFILE"
+}
+
+stop()
+{
+	echo "Stopping $NAME"
+	touch "$DISABLE_RESTART"
+
+	if [ -f "$PIDFILE" ]; then
+		pid="$(cat "$PIDFILE" 2>/dev/null)"
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			kill "$pid" 2>/dev/null || true
+			sleep 1
+			kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+		fi
+		rm -f "$PIDFILE"
+	fi
+
+	if [ -f "$SUPERVISOR_PIDFILE" ]; then
+		supervisor_pid="$(cat "$SUPERVISOR_PIDFILE" 2>/dev/null)"
+		if [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" 2>/dev/null; then
+			kill "$supervisor_pid" 2>/dev/null || true
+		fi
+		rm -f "$SUPERVISOR_PIDFILE"
+	fi
+}
+
+status()
+{
+	if is_running; then
+		echo "$NAME running with pid $(cat "$PIDFILE")"
+		return 0
+	fi
+
+	echo "$NAME stopped"
+	return 1
+}
+
+case "$1" in
+	start)
+		start
+		;;
+	stop)
+		stop
+		;;
+	restart|reload)
+		stop
+		start
+		;;
+	status)
+		status
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}"
+		exit 1
+		;;
+esac
+
+exit $?
