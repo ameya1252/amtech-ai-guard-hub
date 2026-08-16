@@ -173,13 +173,13 @@ static void check_cross_camera_frames_do_not_mix(void)
                                          &parking);
 
     apply_camera_frame_to_alarm(&front);
-    check_int("first front camera frame does not trigger yet", alarm_logic_is_triggered(), 0);
-    apply_camera_frame_to_alarm(&parking);
-    check_int("first parking frame does not combine with front frame", alarm_logic_is_triggered(), 0);
-
-    apply_camera_frame_to_alarm(&front);
-    check_int("second front frame triggers front-source alarm", alarm_logic_is_triggered(), 1);
+    check_int("single front camera frame triggers front-source alarm", alarm_logic_is_triggered(), 1);
     check_int("front-source camera detection turns siren ON/LOW", gpio_get_simulated_value(42), 0);
+
+    alarm_logic_reset();
+    apply_camera_frame_to_alarm(&parking);
+    check_int("single parking camera frame triggers parking-source alarm", alarm_logic_is_triggered(), 1);
+    check_int("parking-source camera detection turns siren ON/LOW", gpio_get_simulated_value(42), 0);
 }
 
 static void check_legacy_camera_wrapper(void)

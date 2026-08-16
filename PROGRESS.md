@@ -8,9 +8,9 @@ This document summarizes what exists in the repo right now and how the pieces fi
 
 The system now has four main parts:
 
-- Hub-side C code in `src/` for GPIO, sensors, alarm decisions, scheduling, camera detection, modem call/SMS alerts, and cloud notification calls.
+- Hub-side C code in `src/` for GPIO, sensors, alarm decisions, scheduling, camera detection, and modem call/SMS alerts.
 - Test programs in `tests/` for the C modules and hardware bring-up diagnostics.
-- A Python backend in `backend/` for alert storage, user/shop APIs, WhatsApp Cloud API integration, and media upload URLs.
+- A Python backend in `backend/` for alert storage, user/shop APIs, and media upload URLs.
 - Patch files in `patches/` for wiring AMTECH logic into Rockchip's cloned `rknn_model_zoo` YOLOv5 example.
 
 ## Hub Runtime Logic
@@ -141,14 +141,14 @@ The alarm supports:
 - Panic button bypass.
 - Smoke/fire bypass.
 - Siren/strobe relay control.
-- Backend notification trigger.
+- Backend alert-history logging support.
 - SIM modem call/SMS dispatch.
 
 Person detection:
 
 - Person class is class ID `0` or class name `"person"`.
 - Confidence must be greater than `0.25`, based on the 54-image ground-truth threshold sweep.
-- A person must appear for `2` consecutive camera frames before the alarm triggers.
+- A single qualifying camera frame triggers the person-detection alarm path for faster response.
 - Person detection does not trigger while DISARMED.
 
 Siren and strobe:
@@ -163,7 +163,7 @@ Repeated triggers:
 
 - Any fresh trigger reactivates the siren and restarts the 5-second siren timer, even if the alarm was already active.
 - Notification/call/SMS dispatch is rate-limited by a shared `30000ms` cooldown to avoid alert spam.
-- The siren/strobe reactivation is independent from the notification cooldown.
+- The siren/strobe reactivation is independent from the call/SMS alert-dispatch cooldown.
 
 ## Camera Detection
 
@@ -200,6 +200,8 @@ Baseline 480 letterbox, threshold >0.25:
 ```
 
 Net effect: +5 true positives with zero new false positives. CLAHE gained detections on `data_02`, `data_15`, `data_17`, `data_19`, `data_28`, `data_34`, and `data_41`, while losing two borderline detections on `data_43` and `data_52`.
+
+Single-frame person confirmation was adopted after rerunning the two no-person ground-truth images (`data_21.jpg` and `data_45.jpg`) on the real board through the production 480 letterbox + CLAHE path at threshold `>0.25`. Both returned `NO_PERSON_DETECTED`, so the empty-scene false-positive count remained `0/2`.
 
 The added dataset-frame latency was about 434ms on average:
 
@@ -284,36 +286,6 @@ It supports:
 
 The runtime uses real system time for the current arm/disarm decision.
 
-## Notifications To Backend
-
-Implemented in `src/notify_client.c`.
-
-The hub sends alerts to the backend endpoint:
-
-```text
-https://amtech-ai-guard-hub-production.up.railway.app/alert
-```
-
-It can be overridden with:
-
-```sh
-AMTECH_BACKEND_ALERT_URL=http://127.0.0.1:8000/alert
-```
-
-Event types currently used:
-
-- `intrusion`
-- `shutter`
-- `shutter-1`
-- `shutter-2`
-- `panic`
-- `smoke`
-- `test`
-
-`SIMULATE_NETWORK` mode prints the request instead of using libcurl.
-
-The live Railway backend has been tested with real HTTPS requests from the C client. WhatsApp sending is still simulated on the backend unless Meta credentials and template settings are configured.
-
 ## SIM7672 Modem
 
 The modem transport and HAL are implemented in:
@@ -330,7 +302,7 @@ Current modem architecture:
 - The data/PDP internet path was deliberately removed.
 - The modem is now registration-only for SMS and voice call reliability.
 - The state machine stops at `REGISTERED`.
-- Cloud/internet alerts use the normal network path through `notify_client.c`, not modem data.
+- Emergency alerts use modem SMS and voice calls, not modem data or WhatsApp.
 
 Registration state machine:
 
@@ -419,10 +391,7 @@ Database:
 
 The backend reads `DATABASE_URL` from the environment. Neon Postgres is intended for Railway. SQLite can still be used for local testing.
 
-WhatsApp:
-
-- `SIMULATE_WHATSAPP` defaults on.
-- Real Meta WhatsApp Cloud API code exists but needs Meta credentials, phone number ID, recipient, and approved utility template before real messages are sent.
+The backend no longer sends WhatsApp messages. Its alert role is database logging for the app's alert history feed.
 
 ## Tests
 
@@ -431,7 +400,6 @@ Current C test coverage includes:
 - `tests/test_alarm_logic.c`
 - `tests/test_sensor_input.c`
 - `tests/test_schedule.c`
-- `tests/test_notify_client.c`
 - `tests/test_runtime_config.c`
 - `tests/test_sim_modem.c`
 - `tests/test_modem_state.c`
@@ -451,7 +419,6 @@ Diagnostic/hardware bring-up tests and scripts include:
 Simulation flags:
 
 - `SIMULATE_GPIO`
-- `SIMULATE_NETWORK`
 - `SIMULATE_MODEM`
 - `SIMULATE_CAMERA`
 
@@ -461,7 +428,6 @@ Still pending:
 
 - Final production service packaging for `runtime_loop`.
 - Real end-to-end runtime testing with GPIO sensors, camera RTSP, NPU inference, relays, and modem wired together for a long duration.
-- Real Meta WhatsApp production sending.
 - Mobile app.
 - App-managed contact lists and device/shop configuration sync.
 - Camera media upload from hub to backend/R2 during alerts.

@@ -2,14 +2,13 @@
 
 #include "alert_dispatch.h"
 #include "gpio_control.h"
-#include "notify_client.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define PERSON_CLASS_ID 0
 #define PERSON_CONFIDENCE_THRESHOLD 0.25f
-#define REQUIRED_CONSECUTIVE_FRAMES 2
+#define REQUIRED_CONSECUTIVE_FRAMES 1
 #define SHOP_ID_MAX_SIZE 64
 #define AMTECH_STROBE_GPIO_PIN 48
 #define AMTECH_DETECTION_SOURCE_MAX 4
@@ -27,8 +26,8 @@ static int alarm_gpio_pin = -1;
 static int strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
 static int siren_active = 0;
 static unsigned int siren_elapsed_ms = 0;
-static int notification_sent_this_incident = 0;
-static unsigned int notification_elapsed_ms = 0;
+static int alert_dispatch_sent_this_incident = 0;
+static unsigned int alert_dispatch_elapsed_ms = 0;
 static int armed = 0;
 static int alarm_triggered = 0;
 static char alarm_shop_id[SHOP_ID_MAX_SIZE] = "amtech-demo-shop";
@@ -129,8 +128,8 @@ void alarm_logic_init(int gpio_pin)
     strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
     siren_active = 0;
     siren_elapsed_ms = 0;
-    notification_sent_this_incident = 0;
-    notification_elapsed_ms = 0;
+    alert_dispatch_sent_this_incident = 0;
+    alert_dispatch_elapsed_ms = 0;
     armed = 0;
     alarm_triggered = 0;
     reset_detection_sources();
@@ -184,25 +183,24 @@ int alarm_logic_is_triggered(void)
 
 void trigger_alarm(void)
 {
-    int should_send_notification;
+    int should_send_alert_dispatch;
 
-    should_send_notification = !notification_sent_this_incident ||
-                               notification_elapsed_ms >= AMTECH_NOTIFICATION_COOLDOWN_MS;
+    should_send_alert_dispatch = !alert_dispatch_sent_this_incident ||
+                                 alert_dispatch_elapsed_ms >= AMTECH_ALERT_DISPATCH_COOLDOWN_MS;
     alarm_triggered = 1;
     printf("Alarm: triggered\n");
 
     reactivate_alarm_outputs();
 
-    if (should_send_notification)
+    if (should_send_alert_dispatch)
     {
-        notify_send_alert(alarm_shop_id, pending_alarm_event_type);
         alert_dispatch_send(pending_alarm_event_type);
-        notification_sent_this_incident = 1;
-        notification_elapsed_ms = 0;
+        alert_dispatch_sent_this_incident = 1;
+        alert_dispatch_elapsed_ms = 0;
     }
     else
     {
-        printf("Alarm: notification suppressed by cooldown\n");
+        printf("Alarm: alert dispatch suppressed by cooldown\n");
     }
 }
 
@@ -211,8 +209,8 @@ void alarm_logic_reset(void)
     alarm_triggered = 0;
     siren_active = 0;
     siren_elapsed_ms = 0;
-    notification_sent_this_incident = 0;
-    notification_elapsed_ms = 0;
+    alert_dispatch_sent_this_incident = 0;
+    alert_dispatch_elapsed_ms = 0;
     reset_detection_sources();
     pending_alarm_event_type = "intrusion";
 
@@ -240,16 +238,16 @@ void alarm_logic_tick(unsigned int elapsed_ms)
     alert_dispatch_tick(elapsed_ms);
 
     if (alarm_triggered &&
-        notification_sent_this_incident &&
-        notification_elapsed_ms < AMTECH_NOTIFICATION_COOLDOWN_MS)
+        alert_dispatch_sent_this_incident &&
+        alert_dispatch_elapsed_ms < AMTECH_ALERT_DISPATCH_COOLDOWN_MS)
     {
-        if (elapsed_ms > AMTECH_NOTIFICATION_COOLDOWN_MS - notification_elapsed_ms)
+        if (elapsed_ms > AMTECH_ALERT_DISPATCH_COOLDOWN_MS - alert_dispatch_elapsed_ms)
         {
-            notification_elapsed_ms = AMTECH_NOTIFICATION_COOLDOWN_MS;
+            alert_dispatch_elapsed_ms = AMTECH_ALERT_DISPATCH_COOLDOWN_MS;
         }
         else
         {
-            notification_elapsed_ms += elapsed_ms;
+            alert_dispatch_elapsed_ms += elapsed_ms;
         }
     }
 

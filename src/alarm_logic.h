@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define AMTECH_SIREN_DURATION_MS 5000U
-#define AMTECH_NOTIFICATION_COOLDOWN_MS 30000U
+#define AMTECH_ALERT_DISPATCH_COOLDOWN_MS 30000U
 
 void alarm_logic_init(int gpio_pin);
 void alarm_logic_set_shop_id(const char *shop_id);

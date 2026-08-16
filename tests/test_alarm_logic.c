@@ -1,7 +1,6 @@
 #include "alarm_logic.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
-#include "notify_client.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -23,13 +22,10 @@ static void check_int(const char *label, int actual, int expected)
     }
 }
 
-static void check_panic_retrigger_and_notification_cooldown(void)
+static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
 {
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
-#endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
 #endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
@@ -44,9 +40,6 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #ifdef SIMULATE_GPIO
     check_int("panic first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("panic first trigger turns strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
-#endif
-#ifdef SIMULATE_NETWORK
-    check_int("panic first trigger sends notification", notify_get_simulated_send_count(), 1);
 #endif
 #ifdef SIMULATE_MODEM
     check_int("panic first trigger sends SMS to all contacts", modem_get_simulated_sms_count(), 3);
@@ -65,11 +58,6 @@ static void check_panic_retrigger_and_notification_cooldown(void)
     check_int("panic second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("panic second trigger keeps strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
-#ifdef SIMULATE_NETWORK
-    check_int("panic second trigger inside cooldown suppresses notification",
-              notify_get_simulated_send_count(),
-              1);
-#endif
 #ifdef SIMULATE_MODEM
     check_int("panic second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
@@ -84,17 +72,12 @@ static void check_panic_retrigger_and_notification_cooldown(void)
     check_int("panic second trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
 
-    alarm_logic_tick(AMTECH_NOTIFICATION_COOLDOWN_MS);
+    alarm_logic_tick(AMTECH_ALERT_DISPATCH_COOLDOWN_MS);
     alarm_logic_handle_panic(1);
 #ifdef SIMULATE_GPIO
     check_int("panic trigger after cooldown restarts siren ON/LOW",
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
               0);
-#endif
-#ifdef SIMULATE_NETWORK
-    check_int("panic trigger after cooldown sends notification",
-              notify_get_simulated_send_count(),
-              2);
 #endif
 #ifdef SIMULATE_MODEM
     check_int("panic trigger after cooldown sends SMS",
@@ -104,11 +87,6 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 
     alarm_logic_reset();
     alarm_logic_handle_panic(1);
-#ifdef SIMULATE_NETWORK
-    check_int("reset clears notification cooldown",
-              notify_get_simulated_send_count(),
-              3);
-#endif
 #ifdef SIMULATE_MODEM
     check_int("reset clears SIM alert cooldown",
               modem_get_simulated_sms_count(),
@@ -116,13 +94,10 @@ static void check_panic_retrigger_and_notification_cooldown(void)
 #endif
 }
 
-static void check_outputs_reactivate_when_notification_is_suppressed(void)
+static void check_outputs_reactivate_when_alert_dispatch_is_suppressed(void)
 {
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
-#endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
 #endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
@@ -133,11 +108,6 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
     alarm_logic_set_armed(0);
 
     alarm_logic_handle_panic(1);
-#ifdef SIMULATE_NETWORK
-    check_int("regression first panic sends notification",
-              notify_get_simulated_send_count(),
-              1);
-#endif
 #ifdef SIMULATE_MODEM
     check_int("regression first panic sends SIM alert",
               modem_get_simulated_sms_count(),
@@ -153,17 +123,12 @@ static void check_outputs_reactivate_when_notification_is_suppressed(void)
 
     alarm_logic_handle_panic(1);
 #ifdef SIMULATE_GPIO
-    check_int("regression siren restarts even when notification suppressed",
+    check_int("regression siren restarts even when alert dispatch suppressed",
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
               0);
-    check_int("regression strobe remains ON even when notification suppressed",
+    check_int("regression strobe remains ON even when alert dispatch suppressed",
               gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
               0);
-#endif
-#ifdef SIMULATE_NETWORK
-    check_int("regression second panic suppresses notification only",
-              notify_get_simulated_send_count(),
-              1);
 #endif
 #ifdef SIMULATE_MODEM
     check_int("regression second panic suppresses SIM alert too",
@@ -176,9 +141,6 @@ static void check_shutter_retrigger(void)
 {
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
-#endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
 #endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
@@ -205,11 +167,6 @@ static void check_shutter_retrigger(void)
     check_int("shutter second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("shutter second trigger keeps strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
-#ifdef SIMULATE_NETWORK
-    check_int("shutter second trigger inside cooldown suppresses notification",
-              notify_get_simulated_send_count(),
-              1);
-#endif
 #ifdef SIMULATE_MODEM
     check_int("shutter second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
@@ -217,11 +174,9 @@ static void check_shutter_retrigger(void)
 #endif
 }
 
-static void send_two_person_frames(void)
+static void send_person_frame(void)
 {
     alarm_logic_handle_detection(0, "person", 0.80f);
-    alarm_logic_end_frame();
-    alarm_logic_handle_detection(0, "person", 0.81f);
     alarm_logic_end_frame();
 }
 
@@ -230,9 +185,6 @@ static void check_person_retrigger(void)
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
 #endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
-#endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
 #endif
@@ -240,8 +192,8 @@ static void check_person_retrigger(void)
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
 
-    send_two_person_frames();
-    check_int("person first 2-frame trigger sets active alarm", alarm_logic_is_triggered(), 1);
+    send_person_frame();
+    check_int("person first single-frame trigger sets active alarm", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
     check_int("person first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
 #endif
@@ -251,19 +203,14 @@ static void check_person_retrigger(void)
     check_int("person first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
 
-    send_two_person_frames();
+    send_person_frame();
 #ifdef SIMULATE_GPIO
-    check_int("person second 2-frame trigger restarts siren ON/LOW",
+    check_int("person second single-frame trigger restarts siren ON/LOW",
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
               0);
-    check_int("person second 2-frame trigger keeps strobe ON/LOW",
+    check_int("person second single-frame trigger keeps strobe ON/LOW",
               gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
               0);
-#endif
-#ifdef SIMULATE_NETWORK
-    check_int("person second trigger inside cooldown suppresses notification",
-              notify_get_simulated_send_count(),
-              1);
 #endif
 #ifdef SIMULATE_MODEM
     check_int("person second trigger inside cooldown suppresses SMS",
@@ -277,9 +224,6 @@ static void check_camera_sources_confirm_independently(void)
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
 #endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
-#endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
 #endif
@@ -287,22 +231,9 @@ static void check_camera_sources_confirm_independently(void)
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
 
-    alarm_logic_handle_detection_source(0, "person", 0.80f, "intrusion-front");
-    alarm_logic_end_frame_source("intrusion-front");
-    alarm_logic_handle_detection_source(0, "person", 0.81f, "intrusion-parking");
-    alarm_logic_end_frame_source("intrusion-parking");
-    check_int("one front frame plus one parking frame does not cross-confirm",
-              alarm_logic_is_triggered(),
-              0);
-#ifdef SIMULATE_GPIO
-    check_int("cross-camera single frames keep siren OFF/HIGH",
-              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
-              1);
-#endif
-
     alarm_logic_handle_detection_source(0, "person", 0.82f, "intrusion-front");
     alarm_logic_end_frame_source("intrusion-front");
-    check_int("second front frame triggers front intrusion",
+    check_int("single front frame triggers front intrusion",
               alarm_logic_is_triggered(),
               1);
 #ifdef SIMULATE_MODEM
@@ -316,9 +247,6 @@ static void check_camera_sources_confirm_independently(void)
 #endif
 
     alarm_logic_reset();
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
-#endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
 #endif
@@ -326,9 +254,7 @@ static void check_camera_sources_confirm_independently(void)
     alarm_logic_set_armed(1);
     alarm_logic_handle_detection_source(0, "person", 0.83f, "intrusion-parking");
     alarm_logic_end_frame_source("intrusion-parking");
-    alarm_logic_handle_detection_source(0, "person", 0.84f, "intrusion-parking");
-    alarm_logic_end_frame_source("intrusion-parking");
-    check_int("two parking frames trigger parking intrusion",
+    check_int("single parking frame triggers parking intrusion",
               alarm_logic_is_triggered(),
               1);
 #ifdef SIMULATE_MODEM
@@ -365,9 +291,6 @@ static void check_call_state_ticks_without_blocking_alarm_flow(void)
 {
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
-#endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
 #endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
@@ -406,9 +329,6 @@ int main(void)
 #ifdef SIMULATE_GPIO
     gpio_reset_simulated_values();
 #endif
-#ifdef SIMULATE_NETWORK
-    notify_reset_simulated_send_count();
-#endif
 #ifdef SIMULATE_MODEM
     modem_reset_simulated_state();
 #endif
@@ -422,14 +342,14 @@ int main(void)
     check_int("strobe initializes OFF/HIGH", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 1);
 #endif
 
-    alarm_logic_handle_detection(0, "person", 0.75f);
+    alarm_logic_handle_detection(1, "car", 0.95f);
     alarm_logic_end_frame();
-    check_int("person detection does not trigger before 2 frames", alarm_logic_is_triggered(), 0);
+    check_int("non-person detection does not trigger", alarm_logic_is_triggered(), 0);
 
     alarm_logic_handle_detection(0, "person", 0.80f);
     alarm_logic_end_frame();
 
-    check_int("person detection triggers after 2 frames", alarm_logic_is_triggered(), 1);
+    check_int("person detection triggers after 1 frame", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
     check_int("siren turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("strobe turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
@@ -540,8 +460,8 @@ int main(void)
 
     check_smoke_triggers_regardless_of_armed_state();
 
-    check_panic_retrigger_and_notification_cooldown();
-    check_outputs_reactivate_when_notification_is_suppressed();
+    check_panic_retrigger_and_alert_dispatch_cooldown();
+    check_outputs_reactivate_when_alert_dispatch_is_suppressed();
     check_shutter_retrigger();
     check_person_retrigger();
     check_camera_sources_confirm_independently();

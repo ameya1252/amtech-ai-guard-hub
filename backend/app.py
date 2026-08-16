@@ -8,7 +8,6 @@ from uuid import uuid4
 import bcrypt
 import boto3
 import jwt
-import requests
 from flask import Flask, g, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -145,61 +144,6 @@ def auth_required(view):
         return view(*args, **kwargs)
 
     return wrapped
-
-
-def build_template_payload(alert):
-    return {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": os.environ["WHATSAPP_TO"],
-        "type": "template",
-        "template": {
-            "name": os.environ["WHATSAPP_TEMPLATE_NAME"],
-            "language": {
-                "code": os.getenv("WHATSAPP_TEMPLATE_LANG", "en_US")
-            },
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [
-                        {"type": "text", "text": alert["shop_id"]},
-                        {"type": "text", "text": alert["event_type"]},
-                        {"type": "text", "text": alert["timestamp"]},
-                    ],
-                }
-            ],
-        },
-    }
-
-
-def send_whatsapp_alert(alert):
-    if env_bool("SIMULATE_WHATSAPP", default=True):
-        print(
-            "Would send WhatsApp alert: "
-            f"{alert['shop_id']} {alert['event_type']} {alert['timestamp']}",
-            flush=True,
-        )
-        return {"simulated": True}
-
-    graph_version = os.getenv("META_GRAPH_API_VERSION", "v20.0")
-    phone_number_id = os.environ["META_PHONE_NUMBER_ID"]
-    access_token = os.environ["META_ACCESS_TOKEN"]
-    url = f"https://graph.facebook.com/{graph_version}/{phone_number_id}/messages"
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
-    payload = build_template_payload(alert)
-
-    # Real Meta WhatsApp Cloud API call. Requires:
-    # - META_ACCESS_TOKEN with whatsapp_business_messaging permission
-    # - META_PHONE_NUMBER_ID
-    # - WHATSAPP_TO recipient phone number / WhatsApp ID
-    # - WHATSAPP_TEMPLATE_NAME for a pre-approved utility template
-    response = requests.post(url, headers=headers, json=payload, timeout=10)
-    response.raise_for_status()
-    return response.json()
 
 
 def r2_client():
@@ -365,7 +309,6 @@ def record_alert(alert_payload):
             event_type=alert_payload["event_type"],
             timestamp=parse_timestamp(alert_payload["timestamp"]),
             media_url=alert_payload["media_url"],
-            whatsapp_sent=False,
         )
         db.add(alert_row)
         db.commit()
@@ -409,7 +352,6 @@ def alert_to_dict(alert_row):
         "event_type": alert_row.event_type,
         "timestamp": timestamp.isoformat(),
         "media_url": alert_row.media_url,
-        "whatsapp_sent": alert_row.whatsapp_sent,
     }
 
 
@@ -538,26 +480,12 @@ def alert():
     try:
         alert_payload = parse_alert(request.get_json(silent=True))
         alert_row = record_alert(alert_payload)
-        provider_response = send_whatsapp_alert(alert_payload)
-        whatsapp_sent = not bool(provider_response.get("simulated"))
-        if alert_row.whatsapp_sent != whatsapp_sent:
-            db = SessionLocal()
-            try:
-                stored_alert = db.get(Alert, alert_row.id)
-                stored_alert.whatsapp_sent = whatsapp_sent
-                db.commit()
-                db.refresh(stored_alert)
-                alert_row = stored_alert
-            finally:
-                db.close()
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except KeyError as exc:
         return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
-    except requests.RequestException as exc:
-        return jsonify({"ok": False, "error": f"whatsapp api call failed: {exc}"}), 502
 
-    return jsonify({"ok": True, "alert": alert_to_dict(alert_row), "provider_response": provider_response})
+    return jsonify({"ok": True, "alert": alert_to_dict(alert_row)})
 
 
 @app.post("/shop")

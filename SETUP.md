@@ -4,37 +4,17 @@
 
 The Luckfox/Rockchip build should run inside the `luckfox-dev` Docker container, not directly on macOS.
 
-For the C notification client, install libcurl development headers in the container:
+No hub-side libcurl dependency is needed. Emergency delivery is handled by the SIM7672 modem using call + SMS, while the backend stores alert history for the app.
 
-```sh
-docker exec -it luckfox-dev bash -c "apt-get update && apt-get install -y libcurl4-openssl-dev pkg-config"
-```
-
-Verify:
-
-```sh
-docker exec -it luckfox-dev bash -c "pkg-config --exists libcurl && echo libcurl-ok && find /usr/include -path '*curl/curl.h' | head"
-```
-
-This is needed for real, non-simulated builds of `src/notify_client.c`.
-
-Simulation builds can use:
-
-```sh
--DSIMULATE_NETWORK
-```
-
-and do not require libcurl headers.
-
-## WhatsApp Backend
+## Alert History Backend
 
 The backend lives in `backend/`.
 
-Run in simulated mode:
+Run locally:
 
 ```sh
 cd backend
-PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
+PORT=8000 python3 app.py
 ```
 
 Test alerts:
@@ -64,7 +44,7 @@ Health check:
 curl https://amtech-ai-guard-hub-production.up.railway.app/health
 ```
 
-Real WhatsApp Cloud API mode will require Meta credentials and an approved utility template.
+The backend no longer sends WhatsApp messages. It stores alerts in the database for the app's alert history feed.
 
 ## Backend Database
 
@@ -86,32 +66,8 @@ The backend creates these tables automatically at startup:
 For local testing without Neon:
 
 ```sh
-DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 SIMULATE_WHATSAPP=1 python3 backend/app.py
+DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 python3 backend/app.py
 ```
-
-## Notification Client URL
-
-The C notification client defaults to the live Railway alert endpoint:
-
-```text
-https://amtech-ai-guard-hub-production.up.railway.app/alert
-```
-
-Override at runtime:
-
-```sh
-export AMTECH_BACKEND_ALERT_URL="http://127.0.0.1:8000/alert"
-```
-
-or at compile time:
-
-```sh
--DNOTIFY_BACKEND_URL=\"https://your-railway-app.up.railway.app/alert\"
-```
-
-HTTPS is handled by libcurl. No extra SSL code is required as long as the target libcurl build has TLS support, which `libcurl4-openssl-dev` provides in the Docker setup.
-
-The live Railway backend currently has WhatsApp simulation enabled. It accepts real HTTPS alert requests and returns `simulated:true`, but it does not send real Meta WhatsApp messages yet.
 
 ## Hub Config File
 
@@ -179,15 +135,13 @@ The runtime now links pthreads because camera detection runs in a background thr
 Cross-compile inside the Docker container:
 
 ```sh
-docker exec luckfox-dev bash -c "cd /workspace && mkdir -p build/luckfox && /workspace/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -Wall -Wextra -DSIMULATE_NETWORK -I /workspace/src /workspace/src/runtime_loop.c /workspace/src/camera_detection.c /workspace/src/config.c /workspace/src/schedule.c /workspace/src/alarm_logic.c /workspace/src/alert_dispatch.c /workspace/src/gpio_control.c /workspace/src/sensor_input.c /workspace/src/notify_client.c /workspace/src/modem_hal.c /workspace/src/modem_state.c /workspace/src/sim_modem.c -pthread -o /workspace/build/luckfox/runtime_loop"
+docker exec luckfox-dev bash -c "cd /workspace && mkdir -p build/luckfox && /workspace/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -Wall -Wextra -I /workspace/src /workspace/src/runtime_loop.c /workspace/src/camera_detection.c /workspace/src/config.c /workspace/src/schedule.c /workspace/src/alarm_logic.c /workspace/src/alert_dispatch.c /workspace/src/gpio_control.c /workspace/src/sensor_input.c /workspace/src/modem_hal.c /workspace/src/modem_state.c /workspace/src/sim_modem.c -pthread -o /workspace/build/luckfox/runtime_loop"
 ```
-
-`-DSIMULATE_NETWORK` is still used for the board runtime build unless a target-compatible ARM/uClibc libcurl is available.
 
 For local simulation tests, use the relevant simulation flags:
 
 ```text
--DSIMULATE_GPIO -DSIMULATE_NETWORK -DSIMULATE_MODEM -DSIMULATE_CAMERA
+-DSIMULATE_GPIO -DSIMULATE_MODEM -DSIMULATE_CAMERA
 ```
 
 ## Camera Detection
@@ -253,6 +207,8 @@ Baseline 480 letterbox: TP=27 FP=0 TN=2 FN=25, recall=51.9%, avg total=848ms
 ```
 
 CLAHE is enabled by default because it gained five net true positives with no new false positives. A direct-JPEG optimization was tested, but it changed detector behavior and did not keep the recall gain, so production keeps the PPM + ffmpeg JPEG encode path.
+
+Person detection now uses single-frame confirmation for faster response. Before finalizing that change, the two no-person ground-truth images (`data_21.jpg` and `data_45.jpg`) were rerun on the real board through the production 480 letterbox + CLAHE path at threshold `>0.25`; both returned `NO_PERSON_DETECTED`, so false positives remained `0/2` on the empty-scene subset.
 
 Production model decision:
 

@@ -1,6 +1,6 @@
-# AMTECH WhatsApp Alert Backend
+# AMTECH Alert History Backend
 
-This backend keeps the permanent Meta WhatsApp Cloud API credentials off the physical hub device.
+This backend stores AMTECH Guard Hub alert history for the owner app. Emergency delivery is handled directly by the hub through SIM7672 voice calls and SMS.
 
 The hub sends alerts to this backend:
 
@@ -16,21 +16,19 @@ Content-Type: application/json
 }
 ```
 
-The backend then sends the WhatsApp message.
+The backend records the alert in the database. It does not send WhatsApp messages.
 
-## Simulated Mode
-
-Simulated mode is enabled by default:
+## Running Locally
 
 ```sh
 cd backend
-PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
+PORT=8000 python3 app.py
 ```
 
 The app binds to `0.0.0.0` and reads the runtime port from `PORT`, which is what Railway provides:
 
 ```sh
-PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
+PORT=8000 python3 app.py
 ```
 
 Railway can start it with the included `Procfile`:
@@ -50,14 +48,6 @@ Live Railway health check:
 ```sh
 curl https://amtech-ai-guard-hub-production.up.railway.app/health
 ```
-
-In this mode it prints:
-
-```text
-Would send WhatsApp alert: {shop_id} {event_type} {timestamp}
-```
-
-The current Railway deployment is still running in simulated WhatsApp mode. It receives real HTTPS alert requests and returns `simulated:true`, but it does not send real Meta WhatsApp messages yet.
 
 Test it from another terminal:
 
@@ -88,7 +78,7 @@ DATABASE_URL=postgresql://...
 For local testing without Neon, a temporary SQLite database can be used:
 
 ```sh
-DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 SIMULATE_WHATSAPP=1 python3 app.py
+DATABASE_URL=sqlite:////tmp/amtech_alerts.db PORT=8000 python3 app.py
 ```
 
 On startup, SQLAlchemy creates the initial tables if they do not exist:
@@ -149,31 +139,3 @@ R2_SECRET_ACCESS_KEY=...
 R2_BUCKET_NAME=...
 R2_PUBLIC_BASE_URL=...
 ```
-
-## Real Meta WhatsApp Cloud API Mode
-
-Set `SIMULATE_WHATSAPP=0` and provide:
-
-```sh
-export META_ACCESS_TOKEN="..."
-export META_PHONE_NUMBER_ID="..."
-export WHATSAPP_TO="..."
-export WHATSAPP_TEMPLATE_NAME="..."
-export WHATSAPP_TEMPLATE_LANG="en_US"
-export META_GRAPH_API_VERSION="v20.0"
-```
-
-The real call goes to:
-
-```text
-https://graph.facebook.com/{META_GRAPH_API_VERSION}/{META_PHONE_NUMBER_ID}/messages
-```
-
-Headers:
-
-```text
-Authorization: Bearer {META_ACCESS_TOKEN}
-Content-Type: application/json
-```
-
-The body uses a WhatsApp `template` message. The template must be created and approved in Meta Business Manager before real alerts can be sent.

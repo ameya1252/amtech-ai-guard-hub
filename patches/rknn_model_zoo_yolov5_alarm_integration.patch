@@ -15,8 +15,12 @@ index fce90e6..b2d8ea6 100644
      postprocess.cc
      ${rknpu_yolov5_file}
 +    ${AMTECH_SRC_DIR}/alarm_logic.c
++    ${AMTECH_SRC_DIR}/alert_dispatch.c
++    ${AMTECH_SRC_DIR}/config.c
 +    ${AMTECH_SRC_DIR}/gpio_control.c
-+    ${AMTECH_SRC_DIR}/notify_client.c
++    ${AMTECH_SRC_DIR}/modem_hal.c
++    ${AMTECH_SRC_DIR}/modem_state.c
++    ${AMTECH_SRC_DIR}/sim_modem.c
  )
  
  target_link_libraries(${PROJECT_NAME}

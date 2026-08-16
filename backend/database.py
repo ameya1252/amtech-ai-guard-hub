@@ -57,6 +57,8 @@ class Alert(Base):
     event_type = Column(String(32), nullable=False)
     timestamp = Column(DateTime(timezone=True), nullable=False)
     media_url = Column(String(2048), nullable=True)
+    # Legacy compatibility column for existing Neon tables. WhatsApp sending has
+    # been removed; new API responses do not expose this field.
     whatsapp_sent = Column(Boolean, nullable=False, default=False)
 
     shop = relationship("Shop", back_populates="alerts")
