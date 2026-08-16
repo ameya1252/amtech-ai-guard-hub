@@ -4,10 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define AMTECH_CAMERA_RAW_FRAME_PATH "/tmp/amtech_live_frame.ppm"
+#define AMTECH_CAMERA_CLAHE_FRAME_PATH "/tmp/amtech_live_frame_clahe.ppm"
 #define AMTECH_CAMERA_FRAME_PATH "/tmp/amtech_live_frame.jpg"
 #define AMTECH_CAMERA_OUTPUT_PATH "/tmp/amtech_camera_detection_output.txt"
 #define AMTECH_CAMERA_CAPTURE_TIMEOUT_SECONDS "15"
+#define AMTECH_CAMERA_CLAHE_TIMEOUT_SECONDS 5
+#define AMTECH_CAMERA_ENCODE_TIMEOUT_SECONDS 5
 #define AMTECH_CAMERA_DEMO_TIMEOUT_SECONDS 30
+#define AMTECH_CAMERA_CLAHE_BIN "/root/amtech_clahe_ppm"
 #define AMTECH_CAMERA_DEMO_BIN "/root/rknn_yolov5_demo_export/rknn_yolov5_demo"
 #define AMTECH_CAMERA_MODEL_PATH "/root/rknn_yolov5_demo_export/model/yolov5.rknn"
 
@@ -141,13 +146,47 @@ static int capture_frame(const char *rtsp_url)
         "1",
         "-vf",
         "scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2",
-        "-q:v",
-        "2",
+        "-pix_fmt",
+        "rgb24",
+        AMTECH_CAMERA_RAW_FRAME_PATH,
+        NULL};
+
+    unlink(AMTECH_CAMERA_RAW_FRAME_PATH);
+    return run_command(argv, NULL, atoi(AMTECH_CAMERA_CAPTURE_TIMEOUT_SECONDS));
+}
+
+static int apply_clahe(void)
+{
+    char *const argv[] = {
+        AMTECH_CAMERA_CLAHE_BIN,
+        AMTECH_CAMERA_RAW_FRAME_PATH,
+        AMTECH_CAMERA_CLAHE_FRAME_PATH,
+        "2.0",
+        "8",
+        "8",
+        NULL};
+
+    unlink(AMTECH_CAMERA_CLAHE_FRAME_PATH);
+    return run_command(argv, NULL, AMTECH_CAMERA_CLAHE_TIMEOUT_SECONDS);
+}
+
+static int encode_clahe_frame(void)
+{
+    char *const argv[] = {
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        AMTECH_CAMERA_CLAHE_FRAME_PATH,
+        "-frames:v",
+        "1",
         AMTECH_CAMERA_FRAME_PATH,
         NULL};
 
     unlink(AMTECH_CAMERA_FRAME_PATH);
-    return run_command(argv, NULL, atoi(AMTECH_CAMERA_CAPTURE_TIMEOUT_SECONDS));
+    return run_command(argv, NULL, AMTECH_CAMERA_ENCODE_TIMEOUT_SECONDS);
 }
 
 static int run_detection_demo(void)
@@ -226,6 +265,16 @@ int camera_detection_run_once(const char *rtsp_url, camera_detection_result_t *r
     }
 
     if (capture_frame(rtsp_url) != 0)
+    {
+        return -1;
+    }
+
+    if (apply_clahe() != 0)
+    {
+        return -1;
+    }
+
+    if (encode_clahe_frame() != 0)
     {
         return -1;
     }

@@ -172,21 +172,52 @@ Camera capture/detection has been integrated locally into the runtime through:
 - `src/camera_detection.c`
 - `src/camera_detection.h`
 
-The implementation uses the subprocess approach proven by the standalone RTSP tests:
+The implementation uses the subprocess approach proven by the standalone RTSP and dataset tests:
 
 - Capture one frame with `ffmpeg`.
 - Use RTSP over TCP.
 - Use reduced probe settings: `-analyzeduration 1000000 -probesize 32768`.
-- Scale before writing the JPEG using aspect-ratio-preserving letterbox: `-vf scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2`.
-- Save to `/tmp/amtech_live_frame.jpg`.
+- Scale to 480x480 with aspect-ratio-preserving letterbox: `-vf scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2`.
+- Save the captured frame as RGB PPM at `/tmp/amtech_live_frame.ppm`.
+- Run luminance-only CLAHE preprocessing with `/root/amtech_clahe_ppm`.
+- Save the enhanced frame as `/tmp/amtech_live_frame_clahe.ppm`.
+- Encode the enhanced frame to `/tmp/amtech_live_frame.jpg`.
 - Run Rockchip's `rknn_yolov5_demo` against that frame.
 - Parse `person @ ... confidence` lines from the demo output.
+
+CLAHE is now the production path because it improved real dataset recall on the 54-image AMTECH ground-truth set:
+
+```text
+Baseline 480 letterbox, threshold >0.25:
+  TP=27 FP=0 TN=2 FN=25
+  recall=51.9%, precision=100.0%, accuracy=53.7%
+  average total dataset frame time=848ms
+
+480 letterbox + CLAHE, threshold >0.25:
+  TP=32 FP=0 TN=2 FN=20
+  recall=61.5%, precision=100.0%, accuracy=63.0%
+  average total dataset frame time=1282ms
+```
+
+Net effect: +5 true positives with zero new false positives. CLAHE gained detections on `data_02`, `data_15`, `data_17`, `data_19`, `data_28`, `data_34`, and `data_41`, while losing two borderline detections on `data_43` and `data_52`.
+
+The added dataset-frame latency was about 434ms on average:
+
+```text
+baseline avg: preprocess=305ms, inference=543ms, total=848ms
+CLAHE avg:    preprocess=297ms, CLAHE=117ms, encode=294ms, inference=573ms, total=1282ms
+```
+
+A faster direct-JPEG CLAHE output path was tested using `stb_image_write`, but it changed the detector outputs and did not preserve the +5 TP improvement. Production therefore keeps the slightly slower PPM-to-ffmpeg-JPEG encode step because it is the accuracy-proven path.
 
 Real paths used by the camera module:
 
 ```text
 /root/rknn_yolov5_demo_export/rknn_yolov5_demo
 /root/rknn_yolov5_demo_export/model/yolov5.rknn
+/root/amtech_clahe_ppm
+/tmp/amtech_live_frame.ppm
+/tmp/amtech_live_frame_clahe.ppm
 /tmp/amtech_live_frame.jpg
 /tmp/amtech_camera_detection_output.txt
 ```
@@ -196,6 +227,8 @@ The runtime starts camera detection in a separate pthread when `CAMERA_RTSP_URL`
 Timeouts:
 
 - ffmpeg capture timeout: `15s`.
+- CLAHE subprocess timeout: `5s`.
+- CLAHE JPEG encode timeout: `5s`.
 - RKNN demo subprocess timeout: `30s`.
 
 `SIMULATE_CAMERA` mode returns canned detection results and does not start a real thread, run ffmpeg, or touch RTSP.

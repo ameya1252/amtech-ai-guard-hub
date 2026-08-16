@@ -172,7 +172,7 @@ Runtime camera detection is enabled only when `CAMERA_RTSP_URL` is set.
 The current implementation uses the proven subprocess pipeline:
 
 ```text
-ffmpeg RTSP capture -> /tmp/amtech_live_frame.jpg -> rknn_yolov5_demo -> parse person detections
+ffmpeg RTSP capture -> RGB PPM -> CLAHE -> enhanced PPM -> JPEG -> rknn_yolov5_demo -> parse person detections
 ```
 
 The ffmpeg profile is:
@@ -181,19 +181,51 @@ The ffmpeg profile is:
 -rtsp_transport tcp -analyzeduration 1000000 -probesize 32768 -vf "scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2"
 ```
 
+The CLAHE utility is built from:
+
+```text
+tools/amtech_clahe_ppm.c
+third_party/graphics_gems/clahe.c
+third_party/stb/stb_image_write.h
+```
+
+Cross-compile it inside Docker:
+
+```sh
+docker exec luckfox-dev bash -c "cd /workspace && mkdir -p build/luckfox && /workspace/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -Wall -Wextra -DBYTE_IMAGE /workspace/tools/amtech_clahe_ppm.c /workspace/third_party/graphics_gems/clahe.c -o /workspace/build/luckfox/amtech_clahe_ppm"
+```
+
+Deploy it to the board at:
+
+```text
+/root/amtech_clahe_ppm
+```
+
 Expected board paths:
 
 ```text
 /root/rknn_yolov5_demo_export/rknn_yolov5_demo
 /root/rknn_yolov5_demo_export/model/yolov5.rknn
+/root/amtech_clahe_ppm
 ```
 
 The camera worker has process timeouts:
 
 - ffmpeg capture: 15 seconds
+- CLAHE: 5 seconds
+- JPEG encode: 5 seconds
 - RKNN demo subprocess: 30 seconds
 
 GPIO interrupt handling stays in the main thread and should continue even if camera capture is slow or fails.
+
+Validation on the 54-image AMTECH ground-truth set at threshold `>0.25`:
+
+```text
+Baseline 480 letterbox: TP=27 FP=0 TN=2 FN=25, recall=51.9%, avg total=848ms
+480 letterbox + CLAHE:  TP=32 FP=0 TN=2 FN=20, recall=61.5%, avg total=1282ms
+```
+
+CLAHE is enabled by default because it gained five net true positives with no new false positives. A direct-JPEG optimization was tested, but it changed detector behavior and did not keep the recall gain, so production keeps the PPM + ffmpeg JPEG encode path.
 
 Testing-only force armed mode:
 
