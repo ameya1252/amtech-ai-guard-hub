@@ -405,6 +405,55 @@ static void check_sms_remote_control(void)
     modem_hangup_voice_call();
 }
 
+static void check_sms_manual_override_blocks_schedule_until_boundary(void)
+{
+    amtech_config_t config;
+
+    amtech_config_set_defaults(&config);
+    snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+
+    modem_simulate_incoming_sms("+911111111111", "ARM");
+    check_int("manual override ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("manual override ARM sets armed", alarm_logic_is_armed(), 1);
+    check_string("manual override immediate ARM reply", modem_get_simulated_last_sms_message(), "System ARMED");
+
+    runtime_test_apply_schedule_armed(0);
+    check_int("schedule cannot immediately disarm SMS manual ARM", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(0);
+    check_int("repeated same schedule state still cannot disarm SMS manual ARM", alarm_logic_is_armed(), 1);
+
+    alarm_logic_handle_shutter_dual_named(SHUTTER_OPEN, "shutter-1", "shutter-1");
+    check_int("shutter open triggers after SMS ARM despite schedule being disarmed", alarm_logic_is_triggered(), 1);
+    alarm_logic_reset();
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("schedule boundary clears manual ARM override and keeps scheduled armed", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(0);
+    check_int("normal schedule disarms after manual ARM override cleared", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("normal schedule-only arm still works without manual override", alarm_logic_is_armed(), 1);
+
+    modem_simulate_incoming_sms("+911111111111", "DISARM");
+    check_int("manual override DISARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("manual override DISARM clears armed", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("schedule cannot immediately re-arm SMS manual DISARM", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("repeated same schedule state still cannot re-arm SMS manual DISARM", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(0);
+    check_int("schedule boundary clears manual DISARM override and keeps scheduled disarmed", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("normal schedule arms after manual DISARM override cleared", alarm_logic_is_armed(), 1);
+}
+
 int main(void)
 {
     amtech_config_t config;
@@ -574,6 +623,7 @@ int main(void)
     check_panic_active_high();
     check_sensor_confirmation_logic();
     check_sms_remote_control();
+    check_sms_manual_override_blocks_schedule_until_boundary();
 
     if (failures == 0)
     {

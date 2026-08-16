@@ -46,6 +46,12 @@
 
 typedef enum
 {
+    RUNTIME_ARM_CONTROL_SCHEDULE = 0,
+    RUNTIME_ARM_CONTROL_MANUAL
+} runtime_arm_control_t;
+
+typedef enum
+{
     WATCH_SHUTTER1_NC = 0,
     WATCH_SHUTTER1_NO,
     WATCH_SHUTTER2_NC,
@@ -143,6 +149,9 @@ static pthread_mutex_t camera_health_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int static_calibration_active = 0;
 static unsigned int static_calibration_elapsed_ms = AMTECH_STATIC_CALIBRATION_MS;
 static int runtime_observed_armed = 0;
+static runtime_arm_control_t runtime_arm_control = RUNTIME_ARM_CONTROL_SCHEDULE;
+static int runtime_last_schedule_known = 0;
+static int runtime_last_schedule_armed = 0;
 
 static int add_watch(gpio_watch_t watches[], int max_watches, int *count, const gpio_watch_t *watch)
 {
@@ -490,6 +499,37 @@ static void runtime_set_armed(int next_armed)
 {
     alarm_logic_set_armed(next_armed);
     runtime_note_armed_state();
+}
+
+static void runtime_apply_schedule_armed(int scheduled_armed)
+{
+    if (!runtime_last_schedule_known)
+    {
+        runtime_last_schedule_known = 1;
+        runtime_last_schedule_armed = scheduled_armed ? 1 : 0;
+    }
+    else if (runtime_last_schedule_armed != (scheduled_armed ? 1 : 0))
+    {
+        runtime_last_schedule_armed = scheduled_armed ? 1 : 0;
+        if (runtime_arm_control == RUNTIME_ARM_CONTROL_MANUAL)
+        {
+            printf("Runtime: schedule boundary reached; clearing SMS manual arm override\n");
+            runtime_arm_control = RUNTIME_ARM_CONTROL_SCHEDULE;
+        }
+    }
+
+    if (runtime_arm_control == RUNTIME_ARM_CONTROL_MANUAL)
+    {
+        return;
+    }
+
+    runtime_set_armed(scheduled_armed);
+}
+
+static void runtime_set_manual_armed(int next_armed)
+{
+    runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
+    runtime_set_armed(next_armed);
 }
 
 static runtime_camera_static_state_t *runtime_find_static_camera(const char *source, int create)
@@ -899,7 +939,15 @@ void runtime_process_camera_detection_result(const camera_detection_result_t *re
 #ifdef AMTECH_RUNTIME_LOOP_TEST
 void runtime_test_set_armed(int armed)
 {
+    runtime_arm_control = RUNTIME_ARM_CONTROL_SCHEDULE;
+    runtime_last_schedule_known = 0;
+    runtime_last_schedule_armed = 0;
     runtime_set_armed(armed);
+}
+
+void runtime_test_apply_schedule_armed(int armed)
+{
+    runtime_apply_schedule_armed(armed);
 }
 
 void runtime_test_tick(unsigned int elapsed_ms)
@@ -1061,12 +1109,13 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     {
         if (alarm_logic_is_armed())
         {
+            runtime_set_manual_armed(1);
             modem_send_sms(sms->sender, "System already ARMED");
             printf("Runtime: accepted redundant SMS ARM command from %s\n", sms->sender);
             return 1;
         }
 
-        runtime_set_armed(1);
+        runtime_set_manual_armed(1);
         modem_send_sms(sms->sender, "System ARMED");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
         return 1;
@@ -1076,12 +1125,13 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     {
         if (!alarm_logic_is_armed())
         {
+            runtime_set_manual_armed(0);
             modem_send_sms(sms->sender, "System already DISARMED");
             printf("Runtime: accepted redundant SMS DISARM command from %s\n", sms->sender);
             return 1;
         }
 
-        runtime_set_armed(0);
+        runtime_set_manual_armed(0);
         modem_send_sms(sms->sender, "System DISARMED");
         printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
         return 1;
@@ -1097,7 +1147,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         }
 
         alarm_logic_reset();
-        runtime_set_armed(0);
+        runtime_set_manual_armed(0);
         modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
         printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
         return 1;
@@ -1186,7 +1236,7 @@ static void update_schedule_from_realtime(void)
         return;
     }
 
-    runtime_set_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
+    runtime_apply_schedule_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
 }
 
 static void trim_runtime_text(char *text)
@@ -1325,12 +1375,13 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     {
         if (alarm_logic_is_armed())
         {
+            runtime_set_manual_armed(1);
             modem_send_sms(sms->sender, "System already ARMED");
             printf("Runtime: accepted redundant SMS ARM command from %s\n", sms->sender);
             return 1;
         }
 
-        runtime_set_armed(1);
+        runtime_set_manual_armed(1);
         modem_send_sms(sms->sender, "System ARMED");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
         return 1;
@@ -1340,12 +1391,13 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     {
         if (!alarm_logic_is_armed())
         {
+            runtime_set_manual_armed(0);
             modem_send_sms(sms->sender, "System already DISARMED");
             printf("Runtime: accepted redundant SMS DISARM command from %s\n", sms->sender);
             return 1;
         }
 
-        runtime_set_armed(0);
+        runtime_set_manual_armed(0);
         modem_send_sms(sms->sender, "System DISARMED");
         printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
         return 1;
@@ -1361,7 +1413,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         }
 
         alarm_logic_reset();
-        runtime_set_armed(0);
+        runtime_set_manual_armed(0);
         modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
         printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
         return 1;

@@ -128,7 +128,9 @@ Current firmware support status:
 
 - `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_ENABLED`, `CAMERA_RTSP_URL`, `CAMERA2_ENABLED`, `CAMERA2_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
 - The app/backend should treat `CAMERA_ENABLED` and `CAMERA2_ENABLED` as the actual toggles. A URL alone is not enough to start a camera.
-- SMS remote control is implemented today: an authorized contact can send `ARM`, `DISARM`, or `STOP` to the hub SIM number. `STOP` clears an active alarm and disarms the system. Unknown senders and unknown commands are ignored without a reply.
+- SMS remote control is implemented today: an authorized contact can send `ARM`, `DISARM`, `STOP`, `STATUS`, or `HELP` to the hub SIM number. `STOP` clears an active alarm and disarms the system. Unknown senders and unknown commands are ignored without a reply.
+- SMS `ARM` and `DISARM` are manual overrides. Once an owner sends `ARM`, the real-time schedule is not allowed to immediately disarm the system just because the current time is outside the scheduled armed window. Once an owner sends `DISARM` or `STOP`, the schedule is not allowed to immediately re-arm it. The manual override clears at the next natural schedule boundary, returning the hub to normal schedule-driven behavior.
+- SMS `ARM` sends an immediate `System ARMED` reply. Shutter, panic, and smoke protection are active immediately after `ARM`; only camera person detection waits for the 60-second static-scene calibration.
 
 ## Runtime Loop Build
 
