@@ -73,8 +73,8 @@ def main():
             headers=headers,
             json={
                 "shop_name": "R2 Media Test Shop",
-                "owner_phone": "+15555550123",
-                "owner_email": email,
+                "owner_name": "R2 Media Test Owner",
+                "address": "123 R2 Media Test Road",
                 "device_serial": device_serial,
             },
             timeout=20,

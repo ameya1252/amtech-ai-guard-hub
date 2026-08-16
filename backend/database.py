@@ -26,6 +26,8 @@ class Shop(Base):
     id = Column(String(128), primary_key=True)
     user_id = Column(String(128), ForeignKey("users.id"), nullable=True, index=True)
     shop_name = Column(String(255), nullable=False)
+    owner_name = Column(String(255), nullable=True)
+    address = Column(String(1024), nullable=True)
     owner_phone = Column(String(64), nullable=True)
     owner_email = Column(String(255), nullable=True)
     auth_id = Column(String(255), nullable=True, index=True)
@@ -101,6 +103,12 @@ def run_migrations():
 
         if "user_id" not in shop_columns:
             connection.execute(text("ALTER TABLE shops ADD COLUMN user_id VARCHAR(128)"))
+
+        if "owner_name" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN owner_name VARCHAR(255)"))
+
+        if "address" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN address VARCHAR(1024)"))
 
         if "media_url" not in alert_columns:
             connection.execute(text("ALTER TABLE alerts ADD COLUMN media_url VARCHAR(2048)"))

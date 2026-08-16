@@ -138,6 +138,7 @@ def auth_required(view):
                 return jsonify({"ok": False, "error": "invalid authorization token"}), 401
             g.user_id = user.id
             g.user_email = user.email
+            g.user_phone = user.phone_number
         finally:
             db.close()
 
@@ -228,21 +229,23 @@ def parse_shop_registration(payload):
         raise ValueError("request body must be a JSON object")
 
     shop_name = payload.get("shop_name")
-    owner_phone = payload.get("owner_phone")
-    owner_email = payload.get("owner_email")
+    owner_name = payload.get("owner_name")
+    address = payload.get("address")
     device_serial = payload.get("device_serial")
 
     if not shop_name:
         raise ValueError("shop_name is required")
-    if not owner_phone:
-        raise ValueError("owner_phone is required")
+    if not owner_name:
+        raise ValueError("owner_name is required")
+    if not address:
+        raise ValueError("address is required")
     if not device_serial:
         raise ValueError("device_serial is required")
 
     return {
         "shop_name": str(shop_name),
-        "owner_phone": str(owner_phone),
-        "owner_email": str(owner_email) if owner_email else None,
+        "owner_name": str(owner_name),
+        "address": str(address),
         "device_serial": str(device_serial),
     }
 
@@ -389,7 +392,10 @@ def shop_to_dict(shop):
         "ok": True,
         "shop_id": shop.id,
         "shop_name": shop.shop_name,
+        "owner_name": shop.owner_name,
+        "address": shop.address,
         "owner_phone": shop.owner_phone,
+        "owner_email": shop.owner_email,
         "device_serial": device.device_serial if device else None,
         "armed": bool(shop.armed),
     }
@@ -411,7 +417,10 @@ def shop_summary_to_dict(shop):
     return {
         "shop_id": shop.id,
         "shop_name": shop.shop_name,
+        "owner_name": shop.owner_name,
+        "address": shop.address,
         "owner_phone": shop.owner_phone,
+        "owner_email": shop.owner_email,
         "device_serial": device.device_serial if device else None,
         "armed": bool(shop.armed),
     }
@@ -514,8 +523,10 @@ def create_shop():
             id=str(uuid4()),
             user_id=g.user_id,
             shop_name=payload["shop_name"],
-            owner_phone=payload["owner_phone"],
-            owner_email=payload["owner_email"],
+            owner_name=payload["owner_name"],
+            address=payload["address"],
+            owner_phone=g.user_phone,
+            owner_email=g.user_email,
             armed=False,
         )
         device = Device(
@@ -535,6 +546,10 @@ def create_shop():
             "ok": True,
             "shop_id": shop.id,
             "shop_name": shop.shop_name,
+            "owner_name": shop.owner_name,
+            "address": shop.address,
+            "owner_phone": shop.owner_phone,
+            "owner_email": shop.owner_email,
             "device_serial": device.device_serial,
         }), 201
     except IntegrityError:

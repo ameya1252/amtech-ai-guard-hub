@@ -116,6 +116,23 @@ JWT_SECRET=...
 
 Auth routes have basic rate limits.
 
+`POST /shop` registers a shop for the authenticated user. The owner phone and email are copied from the logged-in user account, so the app should not re-submit them during onboarding:
+
+```http
+POST /shop
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "shop_name": "AMTECH Test Shop",
+  "owner_name": "Shop Owner Name",
+  "address": "Shop address",
+  "device_serial": "AMT-0000"
+}
+```
+
+The response includes `owner_name`, `address`, `owner_phone`, and `owner_email` along with the shop and device identifiers.
+
 ## Media Upload URLs
 
 The backend can generate Cloudflare R2 presigned upload URLs for future alert images/videos:
