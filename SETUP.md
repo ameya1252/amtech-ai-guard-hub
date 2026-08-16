@@ -128,7 +128,7 @@ Current firmware support status:
 
 - `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_ENABLED`, `CAMERA_RTSP_URL`, `CAMERA2_ENABLED`, `CAMERA2_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
 - The app/backend should treat `CAMERA_ENABLED` and `CAMERA2_ENABLED` as the actual toggles. A URL alone is not enough to start a camera.
-- SMS remote control is implemented today: an authorized contact can send `ARM` or `DISARM` to the hub SIM number. Unknown senders and unknown commands are ignored without a reply.
+- SMS remote control is implemented today: an authorized contact can send `ARM`, `DISARM`, or `STOP` to the hub SIM number. `STOP` clears an active alarm and disarms the system. Unknown senders and unknown commands are ignored without a reply.
 
 ## Runtime Loop Build
 

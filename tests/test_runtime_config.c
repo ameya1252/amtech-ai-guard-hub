@@ -250,6 +250,7 @@ static void check_sensor_confirmation_logic(void)
 static void check_sms_remote_control(void)
 {
     amtech_config_t config;
+    int sms_count_after_trigger;
 
     amtech_config_set_defaults(&config);
     snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
@@ -271,41 +272,77 @@ static void check_sms_remote_control(void)
     check_string("contact 1 ARM reply text", modem_get_simulated_last_sms_message(), "System ARMED");
     check_int("contact 1 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 1);
 
+    modem_simulate_incoming_sms("+911111111111", "arm");
+    check_int("redundant ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("redundant ARM leaves armed", alarm_logic_is_armed(), 1);
+    check_int("redundant ARM sends confirmation SMS", modem_get_simulated_sms_count(), 2);
+    check_string("redundant ARM reply text", modem_get_simulated_last_sms_message(), "System already ARMED");
+    check_int("redundant ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 2);
+
     modem_simulate_incoming_sms("+912222222222", "  disarm \r\n");
     check_int("contact 2 DISARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("contact 2 DISARM clears armed", alarm_logic_is_armed(), 0);
-    check_int("contact 2 DISARM sends confirmation SMS", modem_get_simulated_sms_count(), 2);
+    check_int("contact 2 DISARM sends confirmation SMS", modem_get_simulated_sms_count(), 3);
     check_string("contact 2 DISARM reply text", modem_get_simulated_last_sms_message(), "System DISARMED");
-    check_int("contact 2 DISARM SMS deleted", modem_get_simulated_deleted_sms_count(), 2);
+    check_int("contact 2 DISARM SMS deleted", modem_get_simulated_deleted_sms_count(), 3);
+
+    modem_simulate_incoming_sms("+912222222222", "DISARM");
+    check_int("redundant DISARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("redundant DISARM leaves disarmed", alarm_logic_is_armed(), 0);
+    check_int("redundant DISARM sends confirmation SMS", modem_get_simulated_sms_count(), 4);
+    check_string("redundant DISARM reply text", modem_get_simulated_last_sms_message(), "System already DISARMED");
+    check_int("redundant DISARM SMS deleted", modem_get_simulated_deleted_sms_count(), 4);
 
     modem_simulate_incoming_sms("+913333333333", "aRm");
     check_int("contact 3 mixed-case ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("contact 3 ARM sets armed", alarm_logic_is_armed(), 1);
-    check_int("contact 3 ARM sends confirmation SMS", modem_get_simulated_sms_count(), 3);
-    check_int("contact 3 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 3);
+    check_int("contact 3 ARM sends confirmation SMS", modem_get_simulated_sms_count(), 5);
+    check_int("contact 3 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 5);
+
+    alarm_logic_handle_panic(1);
+    check_int("STOP setup alarm is triggered", alarm_logic_is_triggered(), 1);
+    check_int("STOP setup siren is ON/LOW", gpio_get_simulated_value(42), 0);
+    check_int("STOP setup strobe is ON/LOW", gpio_get_simulated_value(48), 0);
+    sms_count_after_trigger = modem_get_simulated_sms_count();
+
+    modem_simulate_incoming_sms("+911111111111", "stop");
+    check_int("STOP SMS accepted while alarm and alert call are active", runtime_poll_sms_remote_control(&config), 1);
+    check_int("STOP clears triggered state", alarm_logic_is_triggered(), 0);
+    check_int("STOP disarms system", alarm_logic_is_armed(), 0);
+    check_int("STOP turns siren OFF/HIGH", gpio_get_simulated_value(42), 1);
+    check_int("STOP turns strobe OFF/HIGH", gpio_get_simulated_value(48), 1);
+    check_int("STOP sends one confirmation SMS", modem_get_simulated_sms_count(), sms_count_after_trigger + 1);
+    check_string("STOP reply text", modem_get_simulated_last_sms_message(), "Alarm stopped, system DISARMED");
+    check_int("STOP SMS deleted", modem_get_simulated_deleted_sms_count(), 6);
+
+    modem_simulate_incoming_sms("+911111111111", "STOP");
+    check_int("STOP SMS accepted with no active alarm", runtime_poll_sms_remote_control(&config), 1);
+    check_int("STOP no-active leaves triggered clear", alarm_logic_is_triggered(), 0);
+    check_int("STOP no-active sends feedback SMS", modem_get_simulated_sms_count(), sms_count_after_trigger + 2);
+    check_string("STOP no-active reply text", modem_get_simulated_last_sms_message(), "No active alarm");
+    check_int("STOP no-active SMS deleted", modem_get_simulated_deleted_sms_count(), 7);
+
+    alarm_logic_set_armed(1);
 
     modem_simulate_incoming_sms("+919999999999", "DISARM");
     check_int("unknown sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
     check_int("unknown sender does not disarm", alarm_logic_is_armed(), 1);
-    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), 3);
-    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 4);
+    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 2);
+    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 8);
 
     modem_simulate_incoming_sms("+911111111111", "STATUS");
     check_int("malformed valid-sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
     check_int("malformed SMS leaves armed unchanged", alarm_logic_is_armed(), 1);
-    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), 3);
-    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 5);
+    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 2);
+    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 9);
 
     modem_make_voice_call("+911111111111");
     modem_simulate_incoming_sms("+911111111111", "DISARM");
-    check_int("SMS poll skipped while voice call active", runtime_poll_sms_remote_control(&config), 0);
-    check_int("SMS not deleted while call active", modem_get_simulated_deleted_sms_count(), 5);
-    check_int("armed unchanged while SMS poll skipped", alarm_logic_is_armed(), 1);
+    check_int("SMS poll still runs while voice call active", runtime_poll_sms_remote_control(&config), 1);
+    check_int("SMS deleted while call active", modem_get_simulated_deleted_sms_count(), 10);
+    check_int("DISARM clears armed while call active", alarm_logic_is_armed(), 0);
+    check_int("DISARM reply sent while call active", modem_get_simulated_sms_count(), sms_count_after_trigger + 3);
     modem_hangup_voice_call();
-    check_int("queued SMS processed after call ends", runtime_poll_sms_remote_control(&config), 1);
-    check_int("queued DISARM clears armed after call ends", alarm_logic_is_armed(), 0);
-    check_int("queued DISARM reply sent after call ends", modem_get_simulated_sms_count(), 4);
-    check_int("queued DISARM deleted after call ends", modem_get_simulated_deleted_sms_count(), 6);
 }
 
 int main(void)

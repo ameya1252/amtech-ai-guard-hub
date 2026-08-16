@@ -485,6 +485,13 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
 
     if (strcmp(command, "ARM") == 0)
     {
+        if (alarm_logic_is_armed())
+        {
+            modem_send_sms(sms->sender, "System already ARMED");
+            printf("Runtime: accepted redundant SMS ARM command from %s\n", sms->sender);
+            return 1;
+        }
+
         alarm_logic_set_armed(1);
         modem_send_sms(sms->sender, "System ARMED");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
@@ -493,9 +500,32 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
 
     if (strcmp(command, "DISARM") == 0)
     {
+        if (!alarm_logic_is_armed())
+        {
+            modem_send_sms(sms->sender, "System already DISARMED");
+            printf("Runtime: accepted redundant SMS DISARM command from %s\n", sms->sender);
+            return 1;
+        }
+
         alarm_logic_set_armed(0);
         modem_send_sms(sms->sender, "System DISARMED");
         printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "STOP") == 0)
+    {
+        if (!alarm_logic_is_triggered())
+        {
+            modem_send_sms(sms->sender, "No active alarm");
+            printf("Runtime: accepted SMS STOP command from %s with no active alarm\n", sms->sender);
+            return 1;
+        }
+
+        alarm_logic_reset();
+        alarm_logic_set_armed(0);
+        modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
+        printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
         return 1;
     }
 
@@ -512,11 +542,6 @@ int runtime_poll_sms_remote_control(const amtech_config_t *config)
     if (config == NULL)
     {
         return -1;
-    }
-
-    if (modem_voice_call_is_active())
-    {
-        return 0;
     }
 
     check_result = modem_check_incoming_sms(&sms);
@@ -646,6 +671,13 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
 
     if (strcmp(command, "ARM") == 0)
     {
+        if (alarm_logic_is_armed())
+        {
+            modem_send_sms(sms->sender, "System already ARMED");
+            printf("Runtime: accepted redundant SMS ARM command from %s\n", sms->sender);
+            return 1;
+        }
+
         alarm_logic_set_armed(1);
         modem_send_sms(sms->sender, "System ARMED");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
@@ -654,9 +686,32 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
 
     if (strcmp(command, "DISARM") == 0)
     {
+        if (!alarm_logic_is_armed())
+        {
+            modem_send_sms(sms->sender, "System already DISARMED");
+            printf("Runtime: accepted redundant SMS DISARM command from %s\n", sms->sender);
+            return 1;
+        }
+
         alarm_logic_set_armed(0);
         modem_send_sms(sms->sender, "System DISARMED");
         printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "STOP") == 0)
+    {
+        if (!alarm_logic_is_triggered())
+        {
+            modem_send_sms(sms->sender, "No active alarm");
+            printf("Runtime: accepted SMS STOP command from %s with no active alarm\n", sms->sender);
+            return 1;
+        }
+
+        alarm_logic_reset();
+        alarm_logic_set_armed(0);
+        modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
+        printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
         return 1;
     }
 
@@ -673,11 +728,6 @@ int runtime_poll_sms_remote_control(const amtech_config_t *config)
     if (config == NULL)
     {
         return -1;
-    }
-
-    if (modem_voice_call_is_active())
-    {
-        return 0;
     }
 
     check_result = modem_check_incoming_sms(&sms);

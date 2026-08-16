@@ -356,7 +356,7 @@ Alert SMS messages are event-specific:
 
 `SIMULATE_MODEM` mode prints and records simulated SMS/call/hangup behavior for tests.
 
-## SMS Remote Arm/Disarm
+## SMS Remote Arm/Disarm/Stop
 
 Implemented through `src/modem_hal.c` and `src/runtime_loop.c`.
 
@@ -365,11 +365,13 @@ Behavior:
 - The modem is initialized for text-mode SMS receive with `AT+CMGF=1`, SIM storage via `AT+CPMS="SM","SM","SM"`, and stored-message notifications via `AT+CNMI=2,1,0,0,0`.
 - The runtime polls unread SMS periodically using `AT+CMGL="REC UNREAD"`.
 - Only `ALERT_CONTACT_1`, `ALERT_CONTACT_2`, and `ALERT_CONTACT_3` are authorized senders.
-- Valid commands are case-insensitive `ARM` and `DISARM`.
-- Valid commands call the same `alarm_logic_set_armed(1/0)` path used elsewhere and reply with `System ARMED` or `System DISARMED`.
+- Valid commands are case-insensitive `ARM`, `DISARM`, and `STOP`.
+- `ARM` calls the same `alarm_logic_set_armed(1)` path used elsewhere and replies with `System ARMED`, or `System already ARMED` if no state change is needed.
+- `DISARM` calls the same `alarm_logic_set_armed(0)` path used elsewhere and replies with `System DISARMED`, or `System already DISARMED` if no state change is needed.
+- `STOP` calls `alarm_logic_reset()`, disarms the system, and replies with `Alarm stopped, system DISARMED`; if no alarm is active it replies with `No active alarm`.
 - Unknown senders and unrecognized message text are ignored without a reply.
 - Every read SMS is deleted with `AT+CMGD=<index>`, including rejected and malformed messages, so SIM storage does not fill.
-- SMS command polling is skipped while a voice call is active so call escalation is not interrupted.
+- SMS command polling is serialized through the modem HAL mutex, so a `STOP` SMS can still be processed during an active alert call.
 
 ## Backend
 
