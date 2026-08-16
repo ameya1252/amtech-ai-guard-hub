@@ -49,6 +49,7 @@ shutter_state_t runtime_confirmed_shutter_state_from_raw_sequence(int initial_nc
 int runtime_test_camera_queue_fifo_drop_oldest(void);
 void runtime_test_set_armed(int armed);
 void runtime_test_apply_schedule_armed(int armed);
+void runtime_test_apply_schedule_armed_with_config(int armed, const amtech_config_t *config);
 void runtime_test_tick(unsigned int elapsed_ms);
 int runtime_test_static_calibration_active(void);
 void runtime_test_note_camera_health(const char *source, int success);

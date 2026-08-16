@@ -454,6 +454,67 @@ static void check_sms_manual_override_blocks_schedule_until_boundary(void)
     check_int("normal schedule arms after manual DISARM override cleared", alarm_logic_is_armed(), 1);
 }
 
+static void check_camera_monitoring_active_sms(void)
+{
+    amtech_config_t config;
+
+    amtech_config_set_defaults(&config);
+    snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
+    snprintf(config.alert_contacts[1], sizeof(config.alert_contacts[1]), "%s", "+912222222222");
+    snprintf(config.alert_contacts[2], sizeof(config.alert_contacts[2]), "%s", "+913333333333");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+
+    modem_simulate_incoming_sms("+911111111111", "ARM");
+    check_int("camera active SMS setup ARM accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("camera active SMS immediate ARM reply only", modem_get_simulated_sms_count(), 1);
+
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
+    check_int("SMS ARM calibration completion sends all-contact SMS", modem_get_simulated_sms_count(), 4);
+    check_string("SMS ARM completion contact 1", modem_get_simulated_sms_number_at(1), "+911111111111");
+    check_string("SMS ARM completion contact 2", modem_get_simulated_sms_number_at(2), "+912222222222");
+    check_string("SMS ARM completion contact 3", modem_get_simulated_sms_number_at(3), "+913333333333");
+    check_string("SMS ARM completion message",
+                 modem_get_simulated_last_sms_message(),
+                 "Camera monitoring fully active");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+
+    modem_simulate_incoming_sms("+911111111111", "ARM");
+    check_int("abort setup ARM accepted", runtime_poll_sms_remote_control(&config), 1);
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS / 2);
+    modem_simulate_incoming_sms("+911111111111", "DISARM");
+    check_int("abort DISARM accepted during calibration", runtime_poll_sms_remote_control(&config), 1);
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
+    check_int("disarm during calibration suppresses active-camera SMS", modem_get_simulated_sms_count(), 2);
+    check_string("abort final SMS remains DISARM reply",
+                 modem_get_simulated_last_sms_message(),
+                 "System DISARMED");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+
+    runtime_test_apply_schedule_armed_with_config(1, &config);
+    check_int("schedule ARM sets armed for camera active SMS", alarm_logic_is_armed(), 1);
+    check_int("schedule ARM sends no immediate SMS", modem_get_simulated_sms_count(), 0);
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
+    check_int("schedule ARM calibration completion sends all-contact SMS", modem_get_simulated_sms_count(), 3);
+    check_string("schedule completion contact 1", modem_get_simulated_sms_number_at(0), "+911111111111");
+    check_string("schedule completion contact 2", modem_get_simulated_sms_number_at(1), "+912222222222");
+    check_string("schedule completion contact 3", modem_get_simulated_sms_number_at(2), "+913333333333");
+    check_string("schedule completion message",
+                 modem_get_simulated_last_sms_message(),
+                 "Camera monitoring fully active");
+}
+
 int main(void)
 {
     amtech_config_t config;
@@ -624,6 +685,7 @@ int main(void)
     check_sensor_confirmation_logic();
     check_sms_remote_control();
     check_sms_manual_override_blocks_schedule_until_boundary();
+    check_camera_monitoring_active_sms();
 
     if (failures == 0)
     {

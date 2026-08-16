@@ -131,6 +131,7 @@ Current firmware support status:
 - SMS remote control is implemented today: an authorized contact can send `ARM`, `DISARM`, `STOP`, `STATUS`, or `HELP` to the hub SIM number. `STOP` clears an active alarm and disarms the system. Unknown senders and unknown commands are ignored without a reply.
 - SMS `ARM` and `DISARM` are manual overrides. Once an owner sends `ARM`, the real-time schedule is not allowed to immediately disarm the system just because the current time is outside the scheduled armed window. Once an owner sends `DISARM` or `STOP`, the schedule is not allowed to immediately re-arm it. The manual override clears at the next natural schedule boundary, returning the hub to normal schedule-driven behavior.
 - SMS `ARM` sends an immediate `System ARMED` reply. Shutter, panic, and smoke protection are active immediately after `ARM`; only camera person detection waits for the 60-second static-scene calibration.
+- When camera static-scene calibration completes after an arm cycle, the hub sends `Camera monitoring fully active` to all three configured alert contacts. If the system is disarmed before calibration finishes, this second message is not sent.
 
 ## Runtime Loop Build
 
