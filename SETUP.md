@@ -107,6 +107,7 @@ Notes:
 - `SHUTTER_COUNT=1` means Shutter-2 GPIO pins are not exported or watched.
 - `SMOKE_ENABLED=0` is the default so unwired smoke pins cannot false-trigger.
 - `MODEM_DEVICE` defaults to `/dev/ttyS5` but is configurable until the final PCB UART mapping is locked.
+- `ALERT_CONTACT_1/2/3` are used for call/SMS alert escalation and are also the only numbers allowed to control the system by SMS.
 
 Future app/backend device configuration should map UI controls to these config keys:
 
@@ -127,6 +128,7 @@ Current firmware support status:
 
 - `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_ENABLED`, `CAMERA_RTSP_URL`, `CAMERA2_ENABLED`, `CAMERA2_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
 - The app/backend should treat `CAMERA_ENABLED` and `CAMERA2_ENABLED` as the actual toggles. A URL alone is not enough to start a camera.
+- SMS remote control is implemented today: an authorized contact can send `ARM` or `DISARM` to the hub SIM number. Unknown senders and unknown commands are ignored without a reply.
 
 ## Runtime Loop Build
 

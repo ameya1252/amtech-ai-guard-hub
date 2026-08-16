@@ -35,6 +35,7 @@ int runtime_build_camera_configs(const amtech_config_t *config,
                                  int max_cameras);
 int runtime_process_configured_shutters(const amtech_config_t *config);
 void runtime_process_camera_detection_result(const camera_detection_result_t *result);
+int runtime_poll_sms_remote_control(const amtech_config_t *config);
 int runtime_panic_triggered_from_raw(int raw_value);
 int runtime_active_high_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value);
 int runtime_active_low_confirmed_from_raw_sequence(int initial_raw_value, int confirmed_raw_value);

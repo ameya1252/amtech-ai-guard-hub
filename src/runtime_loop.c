@@ -2,10 +2,12 @@
 #include "camera_detection.h"
 #include "config.h"
 #include "gpio_control.h"
+#include "modem_hal.h"
 #include "runtime_loop.h"
 #include "schedule.h"
 #include "sensor_input.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +35,7 @@
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_DEBOUNCE_CONFIRM_MS 200
 #define AMTECH_GPIO_POLL_TIMEOUT_MS 100
+#define AMTECH_SMS_COMMAND_POLL_MS 5000
 #define AMTECH_CAMERA_RETRY_DELAY_SECONDS 1
 #define AMTECH_CAMERA_QUEUE_CAPACITY 8
 
@@ -405,6 +408,133 @@ void runtime_process_camera_detection_result(const camera_detection_result_t *re
     alarm_logic_end_frame_source(result->event_type);
 }
 
+#ifdef SIMULATE_GPIO
+static void trim_runtime_text(char *text)
+{
+    size_t length;
+
+    if (text == NULL)
+    {
+        return;
+    }
+
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')
+    {
+        memmove(text, text + 1, strlen(text));
+    }
+
+    length = strlen(text);
+    while (length > 0 &&
+           (text[length - 1] == ' ' ||
+            text[length - 1] == '\t' ||
+            text[length - 1] == '\r' ||
+            text[length - 1] == '\n'))
+    {
+        text[length - 1] = '\0';
+        length--;
+    }
+}
+
+static void uppercase_runtime_text(char *text)
+{
+    while (text != NULL && *text != '\0')
+    {
+        *text = (char)toupper((unsigned char)*text);
+        text++;
+    }
+}
+
+static int sms_sender_is_authorized(const amtech_config_t *config, const char *sender)
+{
+    int i;
+
+    if (config == NULL || sender == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
+    {
+        if (strcmp(sender, config->alert_contacts[i]) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int process_sms_remote_command(const amtech_config_t *config, const modem_incoming_sms_t *sms)
+{
+    char command[MODEM_SMS_TEXT_MAX];
+
+    if (config == NULL || sms == NULL)
+    {
+        return -1;
+    }
+
+    if (!sms_sender_is_authorized(config, sms->sender))
+    {
+        printf("Runtime: ignored SMS command from unauthorized sender %s\n", sms->sender);
+        return 0;
+    }
+
+    snprintf(command, sizeof(command), "%s", sms->text);
+    trim_runtime_text(command);
+    uppercase_runtime_text(command);
+
+    if (strcmp(command, "ARM") == 0)
+    {
+        alarm_logic_set_armed(1);
+        modem_send_sms(sms->sender, "System ARMED");
+        printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "DISARM") == 0)
+    {
+        alarm_logic_set_armed(0);
+        modem_send_sms(sms->sender, "System DISARMED");
+        printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
+        return 1;
+    }
+
+    printf("Runtime: ignored unrecognized SMS command from authorized sender %s\n", sms->sender);
+    return 0;
+}
+
+int runtime_poll_sms_remote_control(const amtech_config_t *config)
+{
+    modem_incoming_sms_t sms;
+    int check_result;
+    int process_result;
+
+    if (config == NULL)
+    {
+        return -1;
+    }
+
+    if (modem_voice_call_is_active())
+    {
+        return 0;
+    }
+
+    check_result = modem_check_incoming_sms(&sms);
+    if (check_result <= 0)
+    {
+        return check_result;
+    }
+
+    process_result = process_sms_remote_command(config, &sms);
+    if (modem_delete_sms(sms.index) != 0)
+    {
+        printf("Runtime: warning: failed to delete processed SMS index %d\n", sms.index);
+    }
+
+    return process_result;
+}
+#endif
+
 #ifndef SIMULATE_GPIO
 static long long monotonic_ms(void)
 {
@@ -438,6 +568,131 @@ static void update_schedule_from_realtime(void)
     }
 
     alarm_logic_set_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
+}
+
+static void trim_runtime_text(char *text)
+{
+    size_t length;
+
+    if (text == NULL)
+    {
+        return;
+    }
+
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n')
+    {
+        memmove(text, text + 1, strlen(text));
+    }
+
+    length = strlen(text);
+    while (length > 0 &&
+           (text[length - 1] == ' ' ||
+            text[length - 1] == '\t' ||
+            text[length - 1] == '\r' ||
+            text[length - 1] == '\n'))
+    {
+        text[length - 1] = '\0';
+        length--;
+    }
+}
+
+static void uppercase_runtime_text(char *text)
+{
+    while (text != NULL && *text != '\0')
+    {
+        *text = (char)toupper((unsigned char)*text);
+        text++;
+    }
+}
+
+static int sms_sender_is_authorized(const amtech_config_t *config, const char *sender)
+{
+    int i;
+
+    if (config == NULL || sender == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
+    {
+        if (strcmp(sender, config->alert_contacts[i]) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int process_sms_remote_command(const amtech_config_t *config, const modem_incoming_sms_t *sms)
+{
+    char command[MODEM_SMS_TEXT_MAX];
+
+    if (config == NULL || sms == NULL)
+    {
+        return -1;
+    }
+
+    if (!sms_sender_is_authorized(config, sms->sender))
+    {
+        printf("Runtime: ignored SMS command from unauthorized sender %s\n", sms->sender);
+        return 0;
+    }
+
+    snprintf(command, sizeof(command), "%s", sms->text);
+    trim_runtime_text(command);
+    uppercase_runtime_text(command);
+
+    if (strcmp(command, "ARM") == 0)
+    {
+        alarm_logic_set_armed(1);
+        modem_send_sms(sms->sender, "System ARMED");
+        printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "DISARM") == 0)
+    {
+        alarm_logic_set_armed(0);
+        modem_send_sms(sms->sender, "System DISARMED");
+        printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
+        return 1;
+    }
+
+    printf("Runtime: ignored unrecognized SMS command from authorized sender %s\n", sms->sender);
+    return 0;
+}
+
+int runtime_poll_sms_remote_control(const amtech_config_t *config)
+{
+    modem_incoming_sms_t sms;
+    int check_result;
+    int process_result = 0;
+
+    if (config == NULL)
+    {
+        return -1;
+    }
+
+    if (modem_voice_call_is_active())
+    {
+        return 0;
+    }
+
+    check_result = modem_check_incoming_sms(&sms);
+    if (check_result <= 0)
+    {
+        return check_result;
+    }
+
+    process_result = process_sms_remote_command(config, &sms);
+    if (modem_delete_sms(sms.index) != 0)
+    {
+        printf("Runtime: warning: failed to delete processed SMS index %d\n", sms.index);
+    }
+
+    return process_result;
 }
 
 #ifndef SIMULATE_CAMERA
@@ -849,6 +1104,7 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
     struct pollfd poll_fds[AMTECH_RUNTIME_MAX_WATCHED_PINS];
     long long last_schedule_tick_ms = 0;
     long long last_alarm_tick_ms = 0;
+    long long last_sms_poll_ms = 0;
 #ifndef SIMULATE_CAMERA
     camera_result_queue_t camera_queue;
     runtime_camera_config_t camera_configs[AMTECH_RUNTIME_MAX_CAMERAS];
@@ -951,6 +1207,12 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
         {
             tick_schedule_elapsed_seconds(&last_schedule_tick_ms);
             update_schedule_from_realtime();
+        }
+
+        if (last_sms_poll_ms == 0 || now_ms - last_sms_poll_ms >= AMTECH_SMS_COMMAND_POLL_MS)
+        {
+            runtime_poll_sms_remote_control(config);
+            last_sms_poll_ms = now_ms;
         }
 
 #ifdef SIMULATE_CAMERA
@@ -1081,6 +1343,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         alarm_logic_end_frame();
     }
     alarm_logic_tick(1000);
+    runtime_poll_sms_remote_control(config);
 }
 #endif
 
@@ -1137,6 +1400,10 @@ int main(int argc, char **argv)
     }
 #endif
     schedule_set_armed_window(23, 0, 6, 0);
+    if (modem_sms_receive_init() != 0)
+    {
+        printf("Runtime: warning: SMS remote control initialization failed; continuing without SMS control\n");
+    }
 
 #ifdef SIMULATE_GPIO
     for (i = 0; i < AMTECH_RUNTIME_TEST_ITERATIONS; i++)

@@ -18,6 +18,20 @@ int modem_make_voice_call(const char *number);
 void modem_hal_tick(unsigned int elapsed_ms);
 int modem_voice_call_is_active(void);
 
+#define MODEM_SMS_SENDER_MAX 32
+#define MODEM_SMS_TEXT_MAX 160
+
+typedef struct
+{
+    int index;
+    char sender[MODEM_SMS_SENDER_MAX];
+    char text[MODEM_SMS_TEXT_MAX];
+} modem_incoming_sms_t;
+
+int modem_sms_receive_init(void);
+int modem_check_incoming_sms(modem_incoming_sms_t *sms);
+int modem_delete_sms(int index);
+
 typedef enum
 {
     MODEM_CALL_STATUS_IDLE = 0,
@@ -42,6 +56,9 @@ const char *modem_get_simulated_last_sms_message(void);
 const char *modem_get_simulated_last_call_number(void);
 void modem_set_simulated_call_status_sequence(const modem_call_status_t *statuses, int count);
 void modem_set_simulated_call_start_results(const int *results, int count);
+void modem_simulate_incoming_sms(const char *sender, const char *text);
+int modem_get_simulated_deleted_sms_count(void);
+int modem_get_simulated_sms_receive_init_count(void);
 void modem_reset_simulated_state(void);
 #endif
 

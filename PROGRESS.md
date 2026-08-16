@@ -303,6 +303,7 @@ Current modem architecture:
 - The modem is now registration-only for SMS and voice call reliability.
 - The state machine stops at `REGISTERED`.
 - Emergency alerts use modem SMS and voice calls, not modem data or WhatsApp.
+- SMS receiving is used as a backup remote control channel for `ARM` and `DISARM` commands.
 
 Registration state machine:
 
@@ -354,6 +355,21 @@ Alert SMS messages are event-specific:
 - Smoke: `AMTECH ALERT: Smoke detected at your shop. Possible fire emergency.`
 
 `SIMULATE_MODEM` mode prints and records simulated SMS/call/hangup behavior for tests.
+
+## SMS Remote Arm/Disarm
+
+Implemented through `src/modem_hal.c` and `src/runtime_loop.c`.
+
+Behavior:
+
+- The modem is initialized for text-mode SMS receive with `AT+CMGF=1`, SIM storage via `AT+CPMS="SM","SM","SM"`, and stored-message notifications via `AT+CNMI=2,1,0,0,0`.
+- The runtime polls unread SMS periodically using `AT+CMGL="REC UNREAD"`.
+- Only `ALERT_CONTACT_1`, `ALERT_CONTACT_2`, and `ALERT_CONTACT_3` are authorized senders.
+- Valid commands are case-insensitive `ARM` and `DISARM`.
+- Valid commands call the same `alarm_logic_set_armed(1/0)` path used elsewhere and reply with `System ARMED` or `System DISARMED`.
+- Unknown senders and unrecognized message text are ignored without a reply.
+- Every read SMS is deleted with `AT+CMGD=<index>`, including rejected and malformed messages, so SIM storage does not fill.
+- SMS command polling is skipped while a voice call is active so call escalation is not interrupted.
 
 ## Backend
 

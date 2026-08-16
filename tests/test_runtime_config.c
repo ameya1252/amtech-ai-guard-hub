@@ -1,6 +1,7 @@
 #include "config.h"
 #include "alarm_logic.h"
 #include "gpio_control.h"
+#include "modem_hal.h"
 #include "runtime_loop.h"
 #include "sensor_input.h"
 
@@ -246,6 +247,67 @@ static void check_sensor_confirmation_logic(void)
               1);
 }
 
+static void check_sms_remote_control(void)
+{
+    amtech_config_t config;
+
+    amtech_config_set_defaults(&config);
+    snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
+    snprintf(config.alert_contacts[1], sizeof(config.alert_contacts[1]), "%s", "+912222222222");
+    snprintf(config.alert_contacts[2], sizeof(config.alert_contacts[2]), "%s", "+913333333333");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    alarm_logic_set_armed(0);
+
+    check_int("SMS receive init succeeds", modem_sms_receive_init(), 0);
+    check_int("SMS receive init count", modem_get_simulated_sms_receive_init_count(), 1);
+
+    modem_simulate_incoming_sms("+911111111111", "ARM");
+    check_int("contact 1 ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("contact 1 ARM sets armed", alarm_logic_is_armed(), 1);
+    check_int("contact 1 ARM sends confirmation SMS", modem_get_simulated_sms_count(), 1);
+    check_string("contact 1 ARM reply text", modem_get_simulated_last_sms_message(), "System ARMED");
+    check_int("contact 1 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 1);
+
+    modem_simulate_incoming_sms("+912222222222", "  disarm \r\n");
+    check_int("contact 2 DISARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("contact 2 DISARM clears armed", alarm_logic_is_armed(), 0);
+    check_int("contact 2 DISARM sends confirmation SMS", modem_get_simulated_sms_count(), 2);
+    check_string("contact 2 DISARM reply text", modem_get_simulated_last_sms_message(), "System DISARMED");
+    check_int("contact 2 DISARM SMS deleted", modem_get_simulated_deleted_sms_count(), 2);
+
+    modem_simulate_incoming_sms("+913333333333", "aRm");
+    check_int("contact 3 mixed-case ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    check_int("contact 3 ARM sets armed", alarm_logic_is_armed(), 1);
+    check_int("contact 3 ARM sends confirmation SMS", modem_get_simulated_sms_count(), 3);
+    check_int("contact 3 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 3);
+
+    modem_simulate_incoming_sms("+919999999999", "DISARM");
+    check_int("unknown sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
+    check_int("unknown sender does not disarm", alarm_logic_is_armed(), 1);
+    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), 3);
+    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 4);
+
+    modem_simulate_incoming_sms("+911111111111", "STATUS");
+    check_int("malformed valid-sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
+    check_int("malformed SMS leaves armed unchanged", alarm_logic_is_armed(), 1);
+    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), 3);
+    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 5);
+
+    modem_make_voice_call("+911111111111");
+    modem_simulate_incoming_sms("+911111111111", "DISARM");
+    check_int("SMS poll skipped while voice call active", runtime_poll_sms_remote_control(&config), 0);
+    check_int("SMS not deleted while call active", modem_get_simulated_deleted_sms_count(), 5);
+    check_int("armed unchanged while SMS poll skipped", alarm_logic_is_armed(), 1);
+    modem_hangup_voice_call();
+    check_int("queued SMS processed after call ends", runtime_poll_sms_remote_control(&config), 1);
+    check_int("queued DISARM clears armed after call ends", alarm_logic_is_armed(), 0);
+    check_int("queued DISARM reply sent after call ends", modem_get_simulated_sms_count(), 4);
+    check_int("queued DISARM deleted after call ends", modem_get_simulated_deleted_sms_count(), 6);
+}
+
 int main(void)
 {
     amtech_config_t config;
@@ -414,6 +476,7 @@ int main(void)
     check_shutter2_ignored_when_single_shutter();
     check_panic_active_high();
     check_sensor_confirmation_logic();
+    check_sms_remote_control();
 
     if (failures == 0)
     {

@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <pthread.h>
+
 #ifndef SIMULATE_MODEM
 #include <errno.h>
 #include <fcntl.h>
@@ -20,11 +22,14 @@
 #define MODEM_HAL_SMS_PAYLOAD_SIZE 256
 #define MODEM_HAL_SIMULATED_HISTORY_MAX 32
 #define MODEM_HAL_SIMULATED_STATUS_MAX 64
+#define MODEM_HAL_SIMULATED_INBOX_MAX 8
 #define MODEM_HAL_SHORT_TIMEOUT_MS 3000
+#define MODEM_HAL_SMS_READ_TIMEOUT_MS 5000
 #define MODEM_HAL_SMS_TIMEOUT_MS 60000
 #define MODEM_HAL_CALL_MAX_DURATION_MS 45000U
 #define MODEM_HAL_CALL_STATUS_POLL_MS 1000U
 
+static pthread_mutex_t modem_hal_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int voice_call_active = 0;
 static unsigned int voice_call_elapsed_ms = 0;
 static unsigned int voice_call_status_elapsed_ms = 0;
@@ -45,6 +50,11 @@ static int simulated_status_sequence_index = 0;
 static int simulated_call_start_results[MODEM_HAL_SIMULATED_HISTORY_MAX];
 static int simulated_call_start_result_count = 0;
 static int simulated_call_start_result_index = 0;
+static modem_incoming_sms_t simulated_inbox[MODEM_HAL_SIMULATED_INBOX_MAX];
+static int simulated_inbox_count = 0;
+static int simulated_next_sms_index = 1;
+static int simulated_deleted_sms_count = 0;
+static int simulated_sms_receive_init_count = 0;
 #endif
 
 int modem_get_registration_status(void)
@@ -292,6 +302,260 @@ static modem_call_status_t parse_clcc_status(const char *response)
 }
 #endif
 
+static void trim_sms_text(char *text)
+{
+    size_t length;
+
+    if (text == NULL)
+    {
+        return;
+    }
+
+    while (*text == '\r' || *text == '\n' || *text == ' ' || *text == '\t')
+    {
+        memmove(text, text + 1, strlen(text));
+    }
+
+    length = strlen(text);
+    while (length > 0 &&
+           (text[length - 1] == '\r' ||
+            text[length - 1] == '\n' ||
+            text[length - 1] == ' ' ||
+            text[length - 1] == '\t'))
+    {
+        text[length - 1] = '\0';
+        length--;
+    }
+}
+
+static int parse_quoted_field(const char **cursor, char *out, size_t out_size)
+{
+    const char *start;
+    const char *end;
+    size_t length;
+
+    if (cursor == NULL || *cursor == NULL || out == NULL || out_size == 0)
+    {
+        return -1;
+    }
+
+    start = strchr(*cursor, '"');
+    if (start == NULL)
+    {
+        return -1;
+    }
+    start++;
+    end = strchr(start, '"');
+    if (end == NULL)
+    {
+        return -1;
+    }
+
+    length = (size_t)(end - start);
+    if (length >= out_size)
+    {
+        length = out_size - 1;
+    }
+
+    memcpy(out, start, length);
+    out[length] = '\0';
+    *cursor = end + 1;
+    return 0;
+}
+
+static int parse_cmgl_response(const char *response, modem_incoming_sms_t *sms)
+{
+    const char *line;
+    const char *cursor;
+    const char *text_start;
+    const char *text_end;
+    char ignored[MODEM_SMS_TEXT_MAX];
+    int index;
+    size_t text_length;
+
+    if (response == NULL || sms == NULL)
+    {
+        return -1;
+    }
+
+    line = strstr(response, "+CMGL:");
+    if (line == NULL)
+    {
+        return 1;
+    }
+
+    if (sscanf(line, "+CMGL: %d", &index) != 1)
+    {
+        return -1;
+    }
+
+    cursor = line;
+    if (parse_quoted_field(&cursor, ignored, sizeof(ignored)) != 0)
+    {
+        return -1;
+    }
+    if (parse_quoted_field(&cursor, sms->sender, sizeof(sms->sender)) != 0)
+    {
+        return -1;
+    }
+
+    text_start = strstr(cursor, "\r\n");
+    if (text_start == NULL)
+    {
+        return -1;
+    }
+    text_start += 2;
+
+    text_end = strstr(text_start, "\r\n+CMGL:");
+    if (text_end == NULL)
+    {
+        text_end = strstr(text_start, "\r\n\r\nOK");
+    }
+    if (text_end == NULL)
+    {
+        text_end = strstr(text_start, "\r\nOK");
+    }
+    if (text_end == NULL)
+    {
+        return -1;
+    }
+
+    text_length = (size_t)(text_end - text_start);
+    if (text_length >= sizeof(sms->text))
+    {
+        text_length = sizeof(sms->text) - 1;
+    }
+
+    sms->index = index;
+    memcpy(sms->text, text_start, text_length);
+    sms->text[text_length] = '\0';
+    trim_sms_text(sms->text);
+    return 0;
+}
+
+int modem_sms_receive_init(void)
+{
+    int result = 0;
+
+    pthread_mutex_lock(&modem_hal_mutex);
+#ifdef SIMULATE_MODEM
+    simulated_sms_receive_init_count++;
+    printf("Modem HAL: would initialize SMS receiving with AT+CMGF=1, AT+CPMS=\"SM\",\"SM\",\"SM\", AT+CNMI=2,1,0,0,0\n");
+#else
+    /*
+     * Use SIM-card storage for v1 because it is the standard portable SMS
+     * store across SIMCom variants. Runtime deletes every processed message,
+     * including rejected commands, so this store should not fill during normal
+     * operation.
+     */
+    char response[MODEM_HAL_RESPONSE_SIZE];
+
+    if (sim_modem_send_at("AT+CMGF=1", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0 ||
+        strstr(response, "OK") == NULL)
+    {
+        result = -1;
+        goto done;
+    }
+    if (sim_modem_send_at("AT+CPMS=\"SM\",\"SM\",\"SM\"", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0 ||
+        strstr(response, "OK") == NULL)
+    {
+        result = -1;
+        goto done;
+    }
+    if (sim_modem_send_at("AT+CNMI=2,1,0,0,0", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0 ||
+        strstr(response, "OK") == NULL)
+    {
+        result = -1;
+    }
+done:
+#endif
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return result;
+}
+
+int modem_check_incoming_sms(modem_incoming_sms_t *sms)
+{
+    int result = 0;
+
+    if (sms == NULL)
+    {
+        return -1;
+    }
+
+    memset(sms, 0, sizeof(*sms));
+    pthread_mutex_lock(&modem_hal_mutex);
+#ifdef SIMULATE_MODEM
+    if (simulated_inbox_count == 0)
+    {
+        result = 0;
+    }
+    else
+    {
+        int i;
+
+        *sms = simulated_inbox[0];
+        for (i = 1; i < simulated_inbox_count; i++)
+        {
+            simulated_inbox[i - 1] = simulated_inbox[i];
+        }
+        simulated_inbox_count--;
+        result = 1;
+        printf("Modem HAL: simulated incoming SMS index=%d from %s: %s\n",
+               sms->index,
+               sms->sender,
+               sms->text);
+    }
+#else
+    {
+        char response[MODEM_HAL_RESPONSE_SIZE];
+
+        if (sim_modem_send_at("AT+CMGL=\"REC UNREAD\"",
+                              response,
+                              sizeof(response),
+                              MODEM_HAL_SMS_READ_TIMEOUT_MS) != 0)
+        {
+            result = -1;
+        }
+        else
+        {
+            result = parse_cmgl_response(response, sms);
+        }
+    }
+#endif
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return result;
+}
+
+int modem_delete_sms(int index)
+{
+    int result = 0;
+
+    if (index < 0)
+    {
+        return -1;
+    }
+
+    pthread_mutex_lock(&modem_hal_mutex);
+#ifdef SIMULATE_MODEM
+    simulated_deleted_sms_count++;
+    printf("Modem HAL: would delete SMS index %d with AT+CMGD=%d\n", index, index);
+#else
+    {
+        char command[MODEM_HAL_COMMAND_SIZE];
+        char response[MODEM_HAL_RESPONSE_SIZE];
+
+        snprintf(command, sizeof(command), "AT+CMGD=%d", index);
+        if (sim_modem_send_at(command, response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0 ||
+            strstr(response, "OK") == NULL)
+        {
+            result = -1;
+        }
+    }
+#endif
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return result;
+}
+
 int modem_send_sms(const char *number, const char *message)
 {
     if (number == NULL || number[0] == '\0' || message == NULL || message[0] == '\0')
@@ -301,6 +565,7 @@ int modem_send_sms(const char *number, const char *message)
     }
 
 #ifdef SIMULATE_MODEM
+    pthread_mutex_lock(&modem_hal_mutex);
     printf("Modem HAL: would send SMS to %s: %s\n", number, message);
     snprintf(simulated_last_sms_number, sizeof(simulated_last_sms_number), "%s", number);
     snprintf(simulated_last_sms_message, sizeof(simulated_last_sms_message), "%s", message);
@@ -312,6 +577,7 @@ int modem_send_sms(const char *number, const char *message)
                  number);
     }
     simulated_sms_count++;
+    pthread_mutex_unlock(&modem_hal_mutex);
     return 0;
 #else
     int fd;
@@ -321,9 +587,11 @@ int modem_send_sms(const char *number, const char *message)
     int payload_length;
     int result = -1;
 
+    pthread_mutex_lock(&modem_hal_mutex);
     fd = open_modem_serial();
     if (fd < 0)
     {
+        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 
@@ -388,6 +656,7 @@ int modem_send_sms(const char *number, const char *message)
 
 done:
     close(fd);
+    pthread_mutex_unlock(&modem_hal_mutex);
     return result;
 #endif
 }
@@ -414,6 +683,7 @@ int modem_make_voice_call(const char *number)
     snprintf(command, sizeof(command), "ATD%s;", number);
 
 #ifdef SIMULATE_MODEM
+    pthread_mutex_lock(&modem_hal_mutex);
     printf("Modem HAL: would start voice call to %s with %s\n", number, command);
     snprintf(simulated_last_call_number, sizeof(simulated_last_call_number), "%s", number);
     if (simulated_call_count < MODEM_HAL_SIMULATED_HISTORY_MAX)
@@ -430,17 +700,21 @@ int modem_make_voice_call(const char *number)
         printf("Modem HAL: simulated voice call command failed for %s\n", number);
         voice_call_active = 0;
         voice_call_status = MODEM_CALL_STATUS_FAILED;
+        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 #else
+    pthread_mutex_lock(&modem_hal_mutex);
     if (sim_modem_send_at(command, response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
     {
+        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 
     if (strstr(response, "ERROR") != NULL)
     {
         printf("Modem HAL: voice call command failed: %s\n", response);
+        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 
@@ -451,6 +725,7 @@ int modem_make_voice_call(const char *number)
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
     voice_call_status = MODEM_CALL_STATUS_DIALING;
+    pthread_mutex_unlock(&modem_hal_mutex);
     return 0;
 }
 
@@ -466,6 +741,7 @@ void modem_hangup_voice_call(void)
         return;
     }
 
+    pthread_mutex_lock(&modem_hal_mutex);
 #ifdef SIMULATE_MODEM
     printf("Modem HAL: would send ATH to end current call\n");
     simulated_hangup_count++;
@@ -480,6 +756,7 @@ void modem_hangup_voice_call(void)
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
     voice_call_status = MODEM_CALL_STATUS_ENDED;
+    pthread_mutex_unlock(&modem_hal_mutex);
 }
 
 void modem_hal_tick(unsigned int elapsed_ms)
@@ -493,6 +770,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
         return;
     }
 
+    pthread_mutex_lock(&modem_hal_mutex);
     if (elapsed_ms > MODEM_HAL_CALL_MAX_DURATION_MS - voice_call_elapsed_ms)
     {
         voice_call_elapsed_ms = MODEM_HAL_CALL_MAX_DURATION_MS;
@@ -518,6 +796,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
         voice_call_elapsed_ms = 0;
         voice_call_status_elapsed_ms = 0;
         voice_call_status = MODEM_CALL_STATUS_ENDED;
+        pthread_mutex_unlock(&modem_hal_mutex);
         return;
     }
 
@@ -532,6 +811,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
 
     if (voice_call_status_elapsed_ms < MODEM_HAL_CALL_STATUS_POLL_MS)
     {
+        pthread_mutex_unlock(&modem_hal_mutex);
         return;
     }
     voice_call_status_elapsed_ms = 0;
@@ -559,6 +839,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
     if (sim_modem_send_at("AT+CLCC", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
     {
         voice_call_status = MODEM_CALL_STATUS_FAILED;
+        pthread_mutex_unlock(&modem_hal_mutex);
         return;
     }
 
@@ -572,6 +853,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
         voice_call_status_elapsed_ms = 0;
     }
 #endif
+    pthread_mutex_unlock(&modem_hal_mutex);
 }
 
 int modem_voice_call_is_active(void)
@@ -683,6 +965,37 @@ void modem_set_simulated_call_start_results(const int *results, int count)
     simulated_call_start_result_count = count;
 }
 
+void modem_simulate_incoming_sms(const char *sender, const char *text)
+{
+    modem_incoming_sms_t *sms;
+
+    if (sender == NULL || text == NULL)
+    {
+        return;
+    }
+
+    if (simulated_inbox_count >= MODEM_HAL_SIMULATED_INBOX_MAX)
+    {
+        printf("Modem HAL: simulated SMS inbox full, dropping message from %s\n", sender);
+        return;
+    }
+
+    sms = &simulated_inbox[simulated_inbox_count++];
+    sms->index = simulated_next_sms_index++;
+    snprintf(sms->sender, sizeof(sms->sender), "%s", sender);
+    snprintf(sms->text, sizeof(sms->text), "%s", text);
+}
+
+int modem_get_simulated_deleted_sms_count(void)
+{
+    return simulated_deleted_sms_count;
+}
+
+int modem_get_simulated_sms_receive_init_count(void)
+{
+    return simulated_sms_receive_init_count;
+}
+
 void modem_reset_simulated_state(void)
 {
     int i;
@@ -702,9 +1015,19 @@ void modem_reset_simulated_state(void)
     simulated_status_sequence_index = 0;
     simulated_call_start_result_count = 0;
     simulated_call_start_result_index = 0;
+    simulated_inbox_count = 0;
+    simulated_next_sms_index = 1;
+    simulated_deleted_sms_count = 0;
+    simulated_sms_receive_init_count = 0;
     for (i = 0; i < MODEM_HAL_SIMULATED_HISTORY_MAX; i++)
     {
         simulated_call_start_results[i] = 0;
+    }
+    for (i = 0; i < MODEM_HAL_SIMULATED_INBOX_MAX; i++)
+    {
+        simulated_inbox[i].index = 0;
+        simulated_inbox[i].sender[0] = '\0';
+        simulated_inbox[i].text[0] = '\0';
     }
     voice_call_active = 0;
     voice_call_elapsed_ms = 0;
