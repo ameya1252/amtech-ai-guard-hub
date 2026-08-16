@@ -82,37 +82,101 @@ static void check_sms_fanout(void)
 #endif
 }
 
-static void run_active_call_does_not_stop_escalation(void)
+static void run_slow_sustained_active_stops_escalation(void)
 {
 #ifdef SIMULATE_MODEM
     modem_call_status_t statuses[] = {
         MODEM_CALL_STATUS_RINGING,
+        MODEM_CALL_STATUS_RINGING,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
         MODEM_CALL_STATUS_ACTIVE,
         MODEM_CALL_STATUS_ACTIVE};
 
-    printf("\nScenario 1: active/voicemail call does not stop escalation\n");
+    printf("\nScenario 1: slow sustained active call stops escalation as likely human answer\n");
     modem_reset_simulated_state();
     alert_dispatch_reset();
-    modem_set_simulated_call_status_sequence(statuses, 3);
+    modem_set_simulated_call_status_sequence(statuses, 6);
 
     check_int("scenario 1 dispatch starts", alert_dispatch_send("panic"), 0);
     check_sms_fanout();
     check_int("scenario 1 first call count", modem_get_simulated_call_count(), 1);
     check_string("scenario 1 first call number", modem_get_simulated_call_number_at(0), "+911111111111");
 
+    tick_seconds(6);
+    check_int("scenario 1 confirmed answered",
+              alert_dispatch_get_call_escalation_state(),
+              ALERT_CALL_ESCALATION_ANSWERED);
+    check_int("scenario 1 no calls to contacts 2/3 after answer",
+              modem_get_simulated_call_count(),
+              1);
+
+    tick_seconds(30);
+    check_int("scenario 1 remains stopped after more ticks",
+              alert_dispatch_get_call_escalation_state(),
+              ALERT_CALL_ESCALATION_ANSWERED);
+    check_int("scenario 1 still no extra calls",
+              modem_get_simulated_call_count(),
+              1);
+#endif
+}
+
+static void run_fast_sustained_active_does_not_stop_escalation(void)
+{
+#ifdef SIMULATE_MODEM
+    modem_call_status_t statuses[] = {
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE};
+
+    printf("\nScenario 1b: fast sustained active call is suspected voicemail and does not stop escalation\n");
+    modem_reset_simulated_state();
+    alert_dispatch_reset();
+    modem_set_simulated_call_status_sequence(statuses, 30);
+
+    check_int("scenario 1b dispatch starts", alert_dispatch_send("panic"), 0);
+    check_sms_fanout();
+
     tick_seconds(4);
-    check_int("scenario 1 active call still waiting before timeout",
+    check_int("scenario 1b sustained fast active still waiting, not answered",
               alert_dispatch_get_call_escalation_state(),
               ALERT_CALL_ESCALATION_WAITING);
-    check_int("scenario 1 active call has not stopped escalation",
+    check_int("scenario 1b still only first call before timeout",
               modem_get_simulated_call_count(),
               1);
 
     tick_seconds(26);
-    check_int("scenario 1 active call timed out and moved to retry",
+    check_int("scenario 1b fast active timed out and moved to retry",
               modem_get_simulated_call_count(),
               2);
-    check_string("scenario 1 retry still contact 1",
+    check_string("scenario 1b retry still contact 1",
                  modem_get_simulated_call_number_at(1),
                  "+911111111111");
 #endif
@@ -170,9 +234,9 @@ static void run_brief_active_then_ended_advances(void)
     check_sms_fanout();
 
     tick_seconds(2);
-    check_int("scenario 3 remains waiting during active call",
+    check_int("scenario 3 starts confirming a slow active call",
               alert_dispatch_get_call_escalation_state(),
-              ALERT_CALL_ESCALATION_WAITING);
+              ALERT_CALL_ESCALATION_CONFIRMING_ANSWER);
     tick_ms(1000);
 
     check_int("scenario 3 started next attempt after brief active ended",
@@ -374,7 +438,8 @@ int main(void)
     check_message("smoke",
                   "AMTECH ALERT: Smoke detected at your shop. Possible fire emergency.");
 
-    run_active_call_does_not_stop_escalation();
+    run_slow_sustained_active_stops_escalation();
+    run_fast_sustained_active_does_not_stop_escalation();
     run_contact1_twice_then_contact2_called();
     run_brief_active_then_ended_advances();
     run_all_contacts_exhausted();

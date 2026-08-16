@@ -9,12 +9,17 @@
 
 #define ALERT_CALL_ATTEMPTS_PER_CONTACT 2
 #define ALERT_CALL_ATTEMPT_TIMEOUT_MS 30000U
+#define ALERT_CALL_ANSWER_CONFIRM_MS 3000U
+#define AMTECH_VOICEMAIL_SUSPECT_MS 2000U
 
 static alert_call_escalation_state_t escalation_state = ALERT_CALL_ESCALATION_IDLE;
 static char escalation_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
 static int escalation_contact_index = 0;
 static int escalation_attempt = 0;
 static unsigned int escalation_attempt_elapsed_ms = 0;
+static unsigned int escalation_active_elapsed_ms = 0;
+static int escalation_active_seen = 0;
+static int escalation_fast_active_suspected = 0;
 
 static const char *alert_config_path(void)
 {
@@ -91,10 +96,21 @@ static void clear_escalation(void)
     escalation_contact_index = 0;
     escalation_attempt = 0;
     escalation_attempt_elapsed_ms = 0;
+    escalation_active_elapsed_ms = 0;
+    escalation_active_seen = 0;
+    escalation_fast_active_suspected = 0;
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
     {
         escalation_contacts[i][0] = '\0';
     }
+}
+
+static void reset_current_attempt_timing(void)
+{
+    escalation_attempt_elapsed_ms = 0;
+    escalation_active_elapsed_ms = 0;
+    escalation_active_seen = 0;
+    escalation_fast_active_suspected = 0;
 }
 
 static int start_current_call_attempt(void)
@@ -124,7 +140,7 @@ static int start_current_call_attempt(void)
         if (modem_make_voice_call(number) == 0)
         {
             escalation_state = ALERT_CALL_ESCALATION_WAITING;
-            escalation_attempt_elapsed_ms = 0;
+            reset_current_attempt_timing();
             return 0;
         }
 
@@ -141,7 +157,7 @@ static int start_current_call_attempt(void)
     }
 
     escalation_state = ALERT_CALL_ESCALATION_DONE;
-    escalation_attempt_elapsed_ms = 0;
+    reset_current_attempt_timing();
     printf("Alert dispatch: call escalation complete, no more contacts\n");
     return 0;
 }
@@ -220,6 +236,7 @@ void alert_dispatch_tick(unsigned int elapsed_ms)
 
     if (elapsed_ms == 0 ||
         escalation_state == ALERT_CALL_ESCALATION_IDLE ||
+        escalation_state == ALERT_CALL_ESCALATION_ANSWERED ||
         escalation_state == ALERT_CALL_ESCALATION_DONE ||
         escalation_state == ALERT_CALL_ESCALATION_FAILED)
     {
@@ -239,9 +256,67 @@ void alert_dispatch_tick(unsigned int elapsed_ms)
 
     if (call_status == MODEM_CALL_STATUS_ACTIVE)
     {
+        if (!escalation_active_seen)
+        {
+            escalation_active_seen = 1;
+            escalation_active_elapsed_ms = 0;
+
+            /*
+             * AT+CLCC reports the call as connected, but it cannot prove whether
+             * a human answered or voicemail/IVR picked up. A very fast active
+             * state is treated as suspected voicemail and must not stop contact
+             * escalation. This timing heuristic can be wrong in both directions,
+             * but it avoids letting voicemail block lower-priority contacts.
+             */
+            if (escalation_attempt_elapsed_ms < AMTECH_VOICEMAIL_SUSPECT_MS)
+            {
+                escalation_fast_active_suspected = 1;
+                printf("Alert dispatch: contact %d attempt %d connected after %u ms, suspected voicemail/IVR\n",
+                       escalation_contact_index + 1,
+                       escalation_attempt + 1,
+                       escalation_attempt_elapsed_ms);
+            }
+            else
+            {
+                escalation_state = ALERT_CALL_ESCALATION_CONFIRMING_ANSWER;
+                printf("Alert dispatch: contact %d attempt %d connected after %u ms, confirming likely human answer\n",
+                       escalation_contact_index + 1,
+                       escalation_attempt + 1,
+                       escalation_attempt_elapsed_ms);
+            }
+        }
+        else if (!escalation_fast_active_suspected)
+        {
+            if (elapsed_ms > ALERT_CALL_ANSWER_CONFIRM_MS - escalation_active_elapsed_ms)
+            {
+                escalation_active_elapsed_ms = ALERT_CALL_ANSWER_CONFIRM_MS;
+            }
+            else
+            {
+                escalation_active_elapsed_ms += elapsed_ms;
+            }
+
+            if (escalation_active_elapsed_ms >= ALERT_CALL_ANSWER_CONFIRM_MS)
+            {
+                escalation_state = ALERT_CALL_ESCALATION_ANSWERED;
+                printf("Alert dispatch: contact %d attempt %d confirmed likely human answer, stopping escalation\n",
+                       escalation_contact_index + 1,
+                       escalation_attempt + 1);
+                return;
+            }
+        }
+
         if (escalation_attempt_elapsed_ms < ALERT_CALL_ATTEMPT_TIMEOUT_MS)
         {
             return;
+        }
+    }
+    else
+    {
+        escalation_active_elapsed_ms = 0;
+        if (escalation_state == ALERT_CALL_ESCALATION_CONFIRMING_ANSWER)
+        {
+            escalation_state = ALERT_CALL_ESCALATION_WAITING;
         }
     }
 
