@@ -70,7 +70,7 @@ static void check_camera_source_tags(void)
 {
     camera_detection_result_t result;
 
-    camera_detection_set_simulated_result_for_source("front", 1, 0.82f);
+    camera_detection_set_simulated_result_box_for_source("front", 1, 0.82f, 10, 20, 110, 220);
     check_int("front simulated camera run",
               camera_detection_run_once_for_source("front",
                                                    "intrusion-front",
@@ -80,6 +80,11 @@ static void check_camera_source_tags(void)
               0);
     check_int("front simulated camera person detected", result.person_detected, 1);
     check_float_text("front simulated camera confidence", result.max_confidence, "0.820");
+    check_int("front simulated camera bbox valid", result.person_box_valid, 1);
+    check_int("front simulated camera bbox x1", result.person_x1, 10);
+    check_int("front simulated camera bbox y1", result.person_y1, 20);
+    check_int("front simulated camera bbox x2", result.person_x2, 110);
+    check_int("front simulated camera bbox y2", result.person_y2, 220);
     check_int("front simulated source tag",
               strcmp(result.source, "front") == 0,
               1);
@@ -87,7 +92,7 @@ static void check_camera_source_tags(void)
               strcmp(result.event_type, "intrusion-front") == 0,
               1);
 
-    camera_detection_set_simulated_result_for_source("parking", 1, 0.73f);
+    camera_detection_set_simulated_result_box_for_source("parking", 1, 0.73f, 210, 40, 340, 300);
     check_int("parking simulated camera run",
               camera_detection_run_once_for_source("parking",
                                                    "intrusion-parking",
@@ -97,6 +102,11 @@ static void check_camera_source_tags(void)
               0);
     check_int("parking simulated camera person detected", result.person_detected, 1);
     check_float_text("parking simulated camera confidence", result.max_confidence, "0.730");
+    check_int("parking simulated camera bbox valid", result.person_box_valid, 1);
+    check_int("parking simulated camera bbox x1", result.person_x1, 210);
+    check_int("parking simulated camera bbox y1", result.person_y1, 40);
+    check_int("parking simulated camera bbox x2", result.person_x2, 340);
+    check_int("parking simulated camera bbox y2", result.person_y2, 300);
     check_int("parking simulated source tag",
               strcmp(result.source, "parking") == 0,
               1);
@@ -157,11 +167,12 @@ static void check_cross_camera_frames_do_not_mix(void)
 
     gpio_reset_simulated_values();
     alarm_logic_init(42);
-    alarm_logic_set_armed(1);
-    alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS);
+    runtime_test_set_armed(0);
+    runtime_test_set_armed(1);
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
 
-    camera_detection_set_simulated_result_for_source("front", 1, 0.82f);
-    camera_detection_set_simulated_result_for_source("parking", 1, 0.73f);
+    camera_detection_set_simulated_result_box_for_source("front", 1, 0.82f, 10, 20, 110, 220);
+    camera_detection_set_simulated_result_box_for_source("parking", 1, 0.73f, 210, 40, 340, 300);
     camera_detection_run_once_for_source("front",
                                          "intrusion-front",
                                          "rtsp://example/front",
@@ -180,13 +191,114 @@ static void check_cross_camera_frames_do_not_mix(void)
     check_int("front-source camera detection turns siren ON/LOW", gpio_get_simulated_value(42), 0);
 
     alarm_logic_reset();
-    alarm_logic_set_armed(1);
-    alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS);
+    runtime_test_set_armed(0);
+    runtime_test_set_armed(1);
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
     apply_camera_frame_to_alarm(&parking);
     check_int("single parking camera frame does not trigger parking-source alarm", alarm_logic_is_triggered(), 0);
     apply_camera_frame_to_alarm(&parking);
     check_int("second parking camera frame triggers parking-source alarm", alarm_logic_is_triggered(), 1);
     check_int("parking-source camera detection turns siren ON/LOW", gpio_get_simulated_value(42), 0);
+}
+
+static void check_static_zone_filters_same_location_after_calibration(void)
+{
+    camera_detection_result_t parking_static;
+    camera_detection_result_t parking_moved;
+    int i;
+
+    gpio_reset_simulated_values();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+    runtime_test_set_armed(1);
+
+    camera_detection_set_simulated_result_box_for_source("parking", 1, 0.84f, 200, 60, 330, 360);
+    camera_detection_run_once_for_source("parking",
+                                         "intrusion-parking",
+                                         "rtsp://example/parking",
+                                         NULL,
+                                         &parking_static);
+
+    for (i = 0; i < 3; i++)
+    {
+        apply_camera_frame_to_alarm(&parking_static);
+    }
+    check_int("static calibration suppresses repeated parking detections", alarm_logic_is_triggered(), 0);
+    check_int("static calibration remains active before 60 seconds", runtime_test_static_calibration_active(), 1);
+
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
+    check_int("static calibration ends after 60 seconds", runtime_test_static_calibration_active(), 0);
+
+    apply_camera_frame_to_alarm(&parking_static);
+    apply_camera_frame_to_alarm(&parking_static);
+    check_int("post-calibration same parking box is filtered", alarm_logic_is_triggered(), 0);
+
+    camera_detection_set_simulated_result_box_for_source("parking", 1, 0.84f, 20, 60, 150, 360);
+    camera_detection_run_once_for_source("parking",
+                                         "intrusion-parking",
+                                         "rtsp://example/parking",
+                                         NULL,
+                                         &parking_moved);
+    apply_camera_frame_to_alarm(&parking_moved);
+    check_int("different parking box first frame does not trigger", alarm_logic_is_triggered(), 0);
+    apply_camera_frame_to_alarm(&parking_moved);
+    check_int("different parking box second frame triggers normally", alarm_logic_is_triggered(), 1);
+}
+
+static void check_static_zones_are_independent_per_camera(void)
+{
+    camera_detection_result_t front_static;
+    camera_detection_result_t parking_static;
+    int i;
+
+    gpio_reset_simulated_values();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+    runtime_test_set_armed(1);
+
+    camera_detection_set_simulated_result_box_for_source("parking", 1, 0.81f, 200, 60, 330, 360);
+    camera_detection_run_once_for_source("parking",
+                                         "intrusion-parking",
+                                         "rtsp://example/parking",
+                                         NULL,
+                                         &parking_static);
+    for (i = 0; i < 3; i++)
+    {
+        apply_camera_frame_to_alarm(&parking_static);
+    }
+
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
+
+    camera_detection_set_simulated_result_box_for_source("front", 1, 0.81f, 200, 60, 330, 360);
+    camera_detection_run_once_for_source("front",
+                                         "intrusion-front",
+                                         "rtsp://example/front",
+                                         NULL,
+                                         &front_static);
+
+    apply_camera_frame_to_alarm(&front_static);
+    check_int("parking static zone does not filter same box on front first frame", alarm_logic_is_triggered(), 0);
+    apply_camera_frame_to_alarm(&front_static);
+    check_int("parking static zone does not filter same box on front second frame", alarm_logic_is_triggered(), 1);
+
+    alarm_logic_reset();
+    runtime_test_set_armed(0);
+    runtime_test_set_armed(1);
+    camera_detection_set_simulated_result_box_for_source("front", 1, 0.82f, 10, 20, 110, 220);
+    camera_detection_run_once_for_source("front",
+                                         "intrusion-front",
+                                         "rtsp://example/front",
+                                         NULL,
+                                         &front_static);
+    for (i = 0; i < 3; i++)
+    {
+        apply_camera_frame_to_alarm(&front_static);
+    }
+    runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
+
+    apply_camera_frame_to_alarm(&front_static);
+    apply_camera_frame_to_alarm(&front_static);
+    check_int("front static zone filters front box independently", alarm_logic_is_triggered(), 0);
 }
 
 static void check_legacy_camera_wrapper(void)
@@ -212,6 +324,8 @@ int main(void)
     check_camera_source_tags();
     check_inference_mutex_serializes_camera_threads();
     check_cross_camera_frames_do_not_mix();
+    check_static_zone_filters_same_location_after_calibration();
+    check_static_zones_are_independent_per_camera();
     check_legacy_camera_wrapper();
 
     if (failures == 0)

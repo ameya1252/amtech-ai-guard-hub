@@ -11,6 +11,7 @@ extern "C" {
 
 #define AMTECH_RUNTIME_MAX_WATCHED_PINS 6
 #define AMTECH_RUNTIME_MAX_CAMERAS 2
+#define AMTECH_STATIC_CALIBRATION_MS 60000U
 
 typedef struct
 {
@@ -46,6 +47,9 @@ shutter_state_t runtime_confirmed_shutter_state_from_raw_sequence(int initial_nc
 
 #ifdef AMTECH_RUNTIME_LOOP_TEST
 int runtime_test_camera_queue_fifo_drop_oldest(void);
+void runtime_test_set_armed(int armed);
+void runtime_test_tick(unsigned int elapsed_ms);
+int runtime_test_static_calibration_active(void);
 #endif
 
 #ifdef __cplusplus

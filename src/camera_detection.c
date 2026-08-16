@@ -42,11 +42,16 @@ typedef struct
     char source[AMTECH_CAMERA_SOURCE_MAX];
     int person_detected;
     float confidence;
+    int box_valid;
+    int x1;
+    int y1;
+    int x2;
+    int y2;
 } simulated_camera_result_t;
 
 static simulated_camera_result_t simulated_results[2] = {
-    {"front", 0, 0.0f},
-    {"parking", 0, 0.0f}};
+    {"front", 0, 0.0f, 0, 0, 0, 0, 0},
+    {"parking", 0, 0.0f, 0, 0, 0, 0, 0}};
 static unsigned int simulated_delay_us = 0;
 static int simulated_active_inference = 0;
 static int simulated_max_concurrent_inference = 0;
@@ -75,6 +80,23 @@ void camera_detection_set_simulated_result_for_source(const char *source,
                                                       int person_detected,
                                                       float confidence)
 {
+    camera_detection_set_simulated_result_box_for_source(source,
+                                                         person_detected,
+                                                         confidence,
+                                                         100,
+                                                         100,
+                                                         220,
+                                                         360);
+}
+
+void camera_detection_set_simulated_result_box_for_source(const char *source,
+                                                          int person_detected,
+                                                          float confidence,
+                                                          int x1,
+                                                          int y1,
+                                                          int x2,
+                                                          int y2)
+{
     simulated_camera_result_t *simulated_result;
 
     if (source == NULL || source[0] == '\0')
@@ -85,6 +107,11 @@ void camera_detection_set_simulated_result_for_source(const char *source,
     simulated_result = find_simulated_result(source);
     simulated_result->person_detected = person_detected ? 1 : 0;
     simulated_result->confidence = confidence;
+    simulated_result->box_valid = person_detected ? 1 : 0;
+    simulated_result->x1 = x1;
+    simulated_result->y1 = y1;
+    simulated_result->x2 = x2;
+    simulated_result->y2 = y2;
 }
 
 void camera_detection_set_simulated_delay_us(unsigned int delay_us)
@@ -163,11 +190,21 @@ int camera_detection_run_once_for_source(const char *source,
 
     result->person_detected = find_simulated_result(source)->person_detected;
     result->max_confidence = find_simulated_result(source)->confidence;
-    printf("Camera: SIMULATE_CAMERA source=%s event=%s result person=%d confidence=%.3f\n",
+    result->person_box_valid = find_simulated_result(source)->box_valid;
+    result->person_x1 = find_simulated_result(source)->x1;
+    result->person_y1 = find_simulated_result(source)->y1;
+    result->person_x2 = find_simulated_result(source)->x2;
+    result->person_y2 = find_simulated_result(source)->y2;
+    printf("Camera: SIMULATE_CAMERA source=%s event=%s result person=%d confidence=%.3f box_valid=%d box=(%d,%d,%d,%d)\n",
            result->source,
            result->event_type,
            result->person_detected,
-           result->max_confidence);
+           result->max_confidence,
+           result->person_box_valid,
+           result->person_x1,
+           result->person_y1,
+           result->person_x2,
+           result->person_y2);
     return 0;
 }
 #else
@@ -408,11 +445,14 @@ static int parse_detection_output(const camera_detection_paths_t *paths, camera_
 
     result->person_detected = 0;
     result->max_confidence = 0.0f;
+    result->person_box_valid = 0;
+    result->person_x1 = 0;
+    result->person_y1 = 0;
+    result->person_x2 = 0;
+    result->person_y2 = 0;
 
     while (fgets(line, sizeof(line), fp) != NULL)
     {
-        char *cursor;
-        char *token;
         float confidence;
 
         if (strncmp(line,
@@ -439,33 +479,64 @@ static int parse_detection_output(const camera_detection_paths_t *paths, camera_
             continue;
         }
 
-        cursor = line;
-        token = strtok(cursor, " \t\r\n");
-        while (token != NULL)
         {
-            char *next = strtok(NULL, " \t\r\n");
-            if (next == NULL)
+            int x1;
+            int y1;
+            int x2;
+            int y2;
+            int parsed;
+
+            parsed = sscanf(line, "person @ (%d %d %d %d) %f", &x1, &y1, &x2, &y2, &confidence);
+            if (parsed == 5)
             {
-                char *end = NULL;
-                confidence = strtof(token, &end);
-                if (end != token && confidence > result->max_confidence)
+                if (confidence >= result->max_confidence)
                 {
                     result->max_confidence = confidence;
+                    result->person_box_valid = 1;
+                    result->person_x1 = x1;
+                    result->person_y1 = y1;
+                    result->person_x2 = x2;
+                    result->person_y2 = y2;
                 }
-                break;
+                result->person_detected = 1;
+                continue;
             }
-            token = next;
+        }
+
+        {
+            char *cursor = line;
+            char *token = strtok(cursor, " \t\r\n");
+            while (token != NULL)
+            {
+                char *next = strtok(NULL, " \t\r\n");
+                if (next == NULL)
+                {
+                    char *end = NULL;
+                    confidence = strtof(token, &end);
+                    if (end != token && confidence > result->max_confidence)
+                    {
+                        result->max_confidence = confidence;
+                    }
+                    break;
+                }
+                token = next;
+            }
         }
 
         result->person_detected = 1;
     }
 
     fclose(fp);
-    printf("Camera: detection result source=%s event=%s person=%d confidence=%.3f\n",
+    printf("Camera: detection result source=%s event=%s person=%d confidence=%.3f box_valid=%d box=(%d,%d,%d,%d)\n",
            result->source,
            result->event_type,
            result->person_detected,
-           result->max_confidence);
+           result->max_confidence,
+           result->person_box_valid,
+           result->person_x1,
+           result->person_y1,
+           result->person_x2,
+           result->person_y2);
     return 0;
 }
 

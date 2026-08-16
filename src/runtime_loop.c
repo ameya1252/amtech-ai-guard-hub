@@ -38,6 +38,9 @@
 #define AMTECH_SMS_COMMAND_POLL_MS 5000
 #define AMTECH_CAMERA_RETRY_DELAY_SECONDS 1
 #define AMTECH_CAMERA_QUEUE_CAPACITY 8
+#define AMTECH_STATIC_ZONE_IOU_THRESHOLD 0.80f
+#define AMTECH_STATIC_ZONE_MIN_OCCURRENCES 3
+#define AMTECH_STATIC_ZONE_MAX_PER_CAMERA 8
 
 typedef enum
 {
@@ -62,6 +65,23 @@ typedef struct
     int fd;
     long long last_event_ms;
 } gpio_watch_t;
+
+typedef struct
+{
+    int valid;
+    int x1;
+    int y1;
+    int x2;
+    int y2;
+    int seen_count;
+} runtime_static_zone_t;
+
+typedef struct
+{
+    int used;
+    char source[AMTECH_CAMERA_SOURCE_MAX];
+    runtime_static_zone_t zones[AMTECH_STATIC_ZONE_MAX_PER_CAMERA];
+} runtime_camera_static_state_t;
 
 #ifndef SIMULATE_GPIO
 #ifndef SIMULATE_CAMERA
@@ -105,6 +125,11 @@ static const gpio_watch_t PANIC_WATCH = {
 static const gpio_watch_t SMOKE_WATCH = {
     AMTECH_SMOKE_GPIO_PIN, WATCH_SMOKE, "smoke", "both",
     -1, -1, NULL, NULL, -1, 0};
+
+static runtime_camera_static_state_t static_camera_states[AMTECH_RUNTIME_MAX_CAMERAS];
+static int static_calibration_active = 0;
+static unsigned int static_calibration_elapsed_ms = AMTECH_STATIC_CALIBRATION_MS;
+static int runtime_observed_armed = 0;
 
 static int add_watch(gpio_watch_t watches[], int max_watches, int *count, const gpio_watch_t *watch)
 {
@@ -384,6 +409,273 @@ static const char *runtime_config_path(void)
     return AMTECH_DEFAULT_CONFIG_PATH;
 }
 
+static void runtime_static_calibration_clear(void)
+{
+    memset(static_camera_states, 0, sizeof(static_camera_states));
+}
+
+static void runtime_static_calibration_start(void)
+{
+    runtime_static_calibration_clear();
+    static_calibration_active = 1;
+    static_calibration_elapsed_ms = 0;
+    printf("Runtime: camera static-scene calibration started for %u ms\n",
+           AMTECH_STATIC_CALIBRATION_MS);
+}
+
+static void runtime_static_calibration_stop(void)
+{
+    if (static_calibration_active)
+    {
+        printf("Runtime: camera static-scene calibration stopped before completion\n");
+    }
+    static_calibration_active = 0;
+    static_calibration_elapsed_ms = AMTECH_STATIC_CALIBRATION_MS;
+    runtime_static_calibration_clear();
+}
+
+static void runtime_static_calibration_tick(unsigned int elapsed_ms)
+{
+    if (!static_calibration_active)
+    {
+        return;
+    }
+
+    if (elapsed_ms > AMTECH_STATIC_CALIBRATION_MS - static_calibration_elapsed_ms)
+    {
+        static_calibration_elapsed_ms = AMTECH_STATIC_CALIBRATION_MS;
+    }
+    else
+    {
+        static_calibration_elapsed_ms += elapsed_ms;
+    }
+
+    if (static_calibration_elapsed_ms >= AMTECH_STATIC_CALIBRATION_MS)
+    {
+        static_calibration_active = 0;
+        printf("Runtime: camera static-scene calibration completed\n");
+    }
+}
+
+static void runtime_note_armed_state(void)
+{
+    int is_armed = alarm_logic_is_armed();
+
+    if (!runtime_observed_armed && is_armed)
+    {
+        runtime_static_calibration_start();
+    }
+    else if (runtime_observed_armed && !is_armed)
+    {
+        runtime_static_calibration_stop();
+    }
+
+    runtime_observed_armed = is_armed;
+}
+
+static void runtime_set_armed(int next_armed)
+{
+    alarm_logic_set_armed(next_armed);
+    runtime_note_armed_state();
+}
+
+static runtime_camera_static_state_t *runtime_find_static_camera(const char *source, int create)
+{
+    int i;
+    int empty_index = -1;
+
+    if (source == NULL || source[0] == '\0')
+    {
+        source = "front";
+    }
+
+    for (i = 0; i < AMTECH_RUNTIME_MAX_CAMERAS; i++)
+    {
+        if (static_camera_states[i].used &&
+            strcmp(static_camera_states[i].source, source) == 0)
+        {
+            return &static_camera_states[i];
+        }
+
+        if (!static_camera_states[i].used && empty_index < 0)
+        {
+            empty_index = i;
+        }
+    }
+
+    if (!create || empty_index < 0)
+    {
+        return NULL;
+    }
+
+    static_camera_states[empty_index].used = 1;
+    snprintf(static_camera_states[empty_index].source,
+             sizeof(static_camera_states[empty_index].source),
+             "%s",
+             source);
+    memset(static_camera_states[empty_index].zones,
+           0,
+           sizeof(static_camera_states[empty_index].zones));
+    return &static_camera_states[empty_index];
+}
+
+static float runtime_box_iou(int ax1, int ay1, int ax2, int ay2, int bx1, int by1, int bx2, int by2)
+{
+    int ix1 = ax1 > bx1 ? ax1 : bx1;
+    int iy1 = ay1 > by1 ? ay1 : by1;
+    int ix2 = ax2 < bx2 ? ax2 : bx2;
+    int iy2 = ay2 < by2 ? ay2 : by2;
+    int intersection_width = ix2 - ix1;
+    int intersection_height = iy2 - iy1;
+    int intersection_area;
+    int area_a;
+    int area_b;
+    int union_area;
+
+    if (intersection_width <= 0 || intersection_height <= 0 ||
+        ax2 <= ax1 || ay2 <= ay1 || bx2 <= bx1 || by2 <= by1)
+    {
+        return 0.0f;
+    }
+
+    intersection_area = intersection_width * intersection_height;
+    area_a = (ax2 - ax1) * (ay2 - ay1);
+    area_b = (bx2 - bx1) * (by2 - by1);
+    union_area = area_a + area_b - intersection_area;
+    if (union_area <= 0)
+    {
+        return 0.0f;
+    }
+
+    return (float)intersection_area / (float)union_area;
+}
+
+static void runtime_static_calibration_learn(const camera_detection_result_t *result)
+{
+    runtime_camera_static_state_t *camera_state;
+    int i;
+    int empty_index = -1;
+
+    if (result == NULL || !result->person_detected || !result->person_box_valid)
+    {
+        return;
+    }
+
+    camera_state = runtime_find_static_camera(result->source, 1);
+    if (camera_state == NULL)
+    {
+        return;
+    }
+
+    for (i = 0; i < AMTECH_STATIC_ZONE_MAX_PER_CAMERA; i++)
+    {
+        runtime_static_zone_t *zone = &camera_state->zones[i];
+
+        if (!zone->valid)
+        {
+            if (empty_index < 0)
+            {
+                empty_index = i;
+            }
+            continue;
+        }
+
+        if (runtime_box_iou(zone->x1,
+                            zone->y1,
+                            zone->x2,
+                            zone->y2,
+                            result->person_x1,
+                            result->person_y1,
+                            result->person_x2,
+                            result->person_y2) >= AMTECH_STATIC_ZONE_IOU_THRESHOLD)
+        {
+            zone->seen_count++;
+            if (zone->seen_count == AMTECH_STATIC_ZONE_MIN_OCCURRENCES)
+            {
+                printf("Runtime: confirmed static zone camera=%s box=(%d,%d,%d,%d) seen=%d\n",
+                       result->source,
+                       zone->x1,
+                       zone->y1,
+                       zone->x2,
+                       zone->y2,
+                       zone->seen_count);
+            }
+            return;
+        }
+    }
+
+    if (empty_index < 0)
+    {
+        printf("Runtime: static-zone table full for camera=%s; cannot learn box=(%d,%d,%d,%d)\n",
+               result->source,
+               result->person_x1,
+               result->person_y1,
+               result->person_x2,
+               result->person_y2);
+        return;
+    }
+
+    camera_state->zones[empty_index].valid = 1;
+    camera_state->zones[empty_index].x1 = result->person_x1;
+    camera_state->zones[empty_index].y1 = result->person_y1;
+    camera_state->zones[empty_index].x2 = result->person_x2;
+    camera_state->zones[empty_index].y2 = result->person_y2;
+    camera_state->zones[empty_index].seen_count = 1;
+    printf("Runtime: learned static-zone candidate camera=%s box=(%d,%d,%d,%d)\n",
+           result->source,
+           result->person_x1,
+           result->person_y1,
+           result->person_x2,
+           result->person_y2);
+}
+
+static int runtime_camera_detection_matches_static_zone(const camera_detection_result_t *result)
+{
+    runtime_camera_static_state_t *camera_state;
+    int i;
+
+    if (result == NULL || !result->person_detected || !result->person_box_valid)
+    {
+        return 0;
+    }
+
+    camera_state = runtime_find_static_camera(result->source, 0);
+    if (camera_state == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < AMTECH_STATIC_ZONE_MAX_PER_CAMERA; i++)
+    {
+        runtime_static_zone_t *zone = &camera_state->zones[i];
+
+        if (!zone->valid || zone->seen_count < AMTECH_STATIC_ZONE_MIN_OCCURRENCES)
+        {
+            continue;
+        }
+
+        if (runtime_box_iou(zone->x1,
+                            zone->y1,
+                            zone->x2,
+                            zone->y2,
+                            result->person_x1,
+                            result->person_y1,
+                            result->person_x2,
+                            result->person_y2) >= AMTECH_STATIC_ZONE_IOU_THRESHOLD)
+        {
+            printf("Runtime: ignored static-zone detection at camera=%s box=(%d,%d,%d,%d)\n",
+                   result->source,
+                   result->person_x1,
+                   result->person_y1,
+                   result->person_x2,
+                   result->person_y2);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 void runtime_process_camera_detection_result(const camera_detection_result_t *result)
 {
     if (result == NULL)
@@ -391,11 +683,34 @@ void runtime_process_camera_detection_result(const camera_detection_result_t *re
         return;
     }
 
-    printf("Runtime: camera source=%s event=%s frame person=%d confidence=%.3f\n",
+    runtime_note_armed_state();
+
+    printf("Runtime: camera source=%s event=%s frame person=%d confidence=%.3f box_valid=%d box=(%d,%d,%d,%d)\n",
            result->source,
            result->event_type,
            result->person_detected,
-           result->max_confidence);
+           result->max_confidence,
+           result->person_box_valid,
+           result->person_x1,
+           result->person_y1,
+           result->person_x2,
+           result->person_y2);
+
+    if (alarm_logic_is_armed() && static_calibration_active)
+    {
+        runtime_static_calibration_learn(result);
+        printf("Runtime: camera detection suppressed during static-scene calibration (%u/%u ms)\n",
+               static_calibration_elapsed_ms,
+               AMTECH_STATIC_CALIBRATION_MS);
+        alarm_logic_end_frame_source(result->event_type);
+        return;
+    }
+
+    if (runtime_camera_detection_matches_static_zone(result))
+    {
+        alarm_logic_end_frame_source(result->event_type);
+        return;
+    }
 
     if (result->person_detected)
     {
@@ -407,6 +722,24 @@ void runtime_process_camera_detection_result(const camera_detection_result_t *re
 
     alarm_logic_end_frame_source(result->event_type);
 }
+
+#ifdef AMTECH_RUNTIME_LOOP_TEST
+void runtime_test_set_armed(int armed)
+{
+    runtime_set_armed(armed);
+}
+
+void runtime_test_tick(unsigned int elapsed_ms)
+{
+    alarm_logic_tick(elapsed_ms);
+    runtime_static_calibration_tick(elapsed_ms);
+}
+
+int runtime_test_static_calibration_active(void)
+{
+    return static_calibration_active;
+}
+#endif
 
 #ifdef SIMULATE_GPIO
 static void trim_runtime_text(char *text)
@@ -550,7 +883,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
             return 1;
         }
 
-        alarm_logic_set_armed(1);
+        runtime_set_armed(1);
         modem_send_sms(sms->sender, "System ARMED");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
         return 1;
@@ -565,7 +898,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
             return 1;
         }
 
-        alarm_logic_set_armed(0);
+        runtime_set_armed(0);
         modem_send_sms(sms->sender, "System DISARMED");
         printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
         return 1;
@@ -581,7 +914,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         }
 
         alarm_logic_reset();
-        alarm_logic_set_armed(0);
+        runtime_set_armed(0);
         modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
         printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
         return 1;
@@ -650,7 +983,7 @@ static void update_schedule_from_realtime(void)
         return;
     }
 
-    alarm_logic_set_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
+    runtime_set_armed(schedule_should_be_armed(now_local.tm_hour, now_local.tm_min));
 }
 
 static void trim_runtime_text(char *text)
@@ -794,7 +1127,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
             return 1;
         }
 
-        alarm_logic_set_armed(1);
+        runtime_set_armed(1);
         modem_send_sms(sms->sender, "System ARMED");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
         return 1;
@@ -809,7 +1142,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
             return 1;
         }
 
-        alarm_logic_set_armed(0);
+        runtime_set_armed(0);
         modem_send_sms(sms->sender, "System DISARMED");
         printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
         return 1;
@@ -825,7 +1158,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         }
 
         alarm_logic_reset();
-        alarm_logic_set_armed(0);
+        runtime_set_armed(0);
         modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
         printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
         return 1;
@@ -1365,7 +1698,9 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
         now_ms = monotonic_ms();
         if (last_alarm_tick_ms != 0 && now_ms >= last_alarm_tick_ms)
         {
-            alarm_logic_tick((unsigned int)(now_ms - last_alarm_tick_ms));
+            unsigned int elapsed_ms = (unsigned int)(now_ms - last_alarm_tick_ms);
+            alarm_logic_tick(elapsed_ms);
+            runtime_static_calibration_tick(elapsed_ms);
         }
         last_alarm_tick_ms = now_ms;
 
@@ -1444,7 +1779,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         schedule_tick();
 
         should_be_armed = schedule_should_be_armed(23, 30);
-        alarm_logic_set_armed(should_be_armed);
+        runtime_set_armed(should_be_armed);
     }
 
     sensor_input_set_simulated_raw_value(AMTECH_SHUTTER_NC_GPIO_PIN, iteration == 4 ? 1 : 0);
@@ -1509,6 +1844,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         alarm_logic_end_frame();
     }
     alarm_logic_tick(1000);
+    runtime_static_calibration_tick(1000);
     runtime_poll_sms_remote_control(config);
 }
 #endif
@@ -1542,11 +1878,11 @@ int main(int argc, char **argv)
          * in production because it deliberately bypasses the real arm schedule.
          */
         print_force_armed_warning();
-        alarm_logic_set_armed(1);
+        runtime_set_armed(1);
     }
     else
     {
-        alarm_logic_set_armed(0);
+        runtime_set_armed(0);
     }
 #ifdef SIMULATE_GPIO
     sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN);
