@@ -103,6 +103,8 @@ The backend also has the first mobile-app-facing APIs:
 - `POST /shop`
 - `GET /shop/<shop_id>`
 - `GET /me/shops`
+- `POST /shop/<shop_id>/camera`
+- `GET /shop/<shop_id>/cameras`
 - `POST /shop/<shop_id>/arm`
 - `POST /shop/<shop_id>/disarm`
 - `GET /shop/<shop_id>/status`
@@ -132,6 +134,36 @@ Content-Type: application/json
 ```
 
 The response includes `owner_name`, `address`, `owner_phone`, and `owner_email` along with the shop and device identifiers.
+
+Camera setup uses AMTECH inventory serials. Owners enter only the sticker serial, such as `CAM-0001`; the backend resolves IP and credentials from `camera_inventory` and never returns those credentials to the app.
+
+At startup, the backend seeds `camera_inventory` from `AMTECH_CAMERA_INVENTORY` if present. Format:
+
+```text
+AMTECH_CAMERA_INVENTORY=CAM-0001,192.168.0.4,Amtech,Amtech123;CAM-0002,192.168.0.7,Amtech1,Amtech1234
+```
+
+For the current pilot defaults, `CAM-0001` and `CAM-0002` are seeded from `AMTECH_CAMERA_1_*` and `AMTECH_CAMERA_2_*` environment variables, with the tested local camera values as fallbacks. Move these values fully into environment variables before broader deployment.
+
+```http
+POST /shop/{shop_id}/camera
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "camera_serial": "CAM-0001",
+  "slot_number": 1
+}
+```
+
+For current test-scale/admin seeding, the same endpoint can create a missing inventory record if `camera_ip`, `camera_username`, and `camera_password` are also supplied. The normal owner app should not send those fields.
+
+```http
+GET /shop/{shop_id}/cameras
+Authorization: Bearer {token}
+```
+
+The response includes `camera_serial`, `slot_number`, and `enabled`, but not camera IP, username, or password.
 
 ## Media Upload URLs
 

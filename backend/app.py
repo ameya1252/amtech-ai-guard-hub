@@ -14,7 +14,7 @@ from flask_limiter.util import get_remote_address
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from database import Alert, Device, Shop, SessionLocal, User, init_db
+from database import Alert, Camera, CameraInventory, Device, Shop, SessionLocal, User, init_db
 
 
 app = Flask(__name__)
@@ -250,6 +250,38 @@ def parse_shop_registration(payload):
     }
 
 
+def parse_camera_registration(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    camera_serial = payload.get("camera_serial")
+    slot_number = payload.get("slot_number")
+    camera_ip = payload.get("camera_ip")
+    camera_username = payload.get("camera_username")
+    camera_password = payload.get("camera_password")
+
+    if not camera_serial:
+        raise ValueError("camera_serial is required")
+    if slot_number is None:
+        raise ValueError("slot_number is required")
+
+    try:
+        normalized_slot = int(slot_number)
+    except (TypeError, ValueError):
+        raise ValueError("slot_number must be 1 or 2")
+
+    if normalized_slot not in (1, 2):
+        raise ValueError("slot_number must be 1 or 2")
+
+    return {
+        "camera_serial": str(camera_serial).strip().upper(),
+        "slot_number": normalized_slot,
+        "camera_ip": str(camera_ip).strip() if camera_ip else None,
+        "camera_username": str(camera_username).strip() if camera_username else None,
+        "camera_password": str(camera_password) if camera_password else None,
+    }
+
+
 def parse_signup(payload):
     if not isinstance(payload, dict):
         raise ValueError("request body must be a JSON object")
@@ -368,6 +400,16 @@ def shop_status_to_dict(shop):
     }
 
 
+def camera_to_dict(camera):
+    return {
+        "id": camera.id,
+        "shop_id": camera.shop_id,
+        "camera_serial": camera.camera_serial,
+        "slot_number": camera.slot_number,
+        "enabled": bool(camera.enabled),
+    }
+
+
 def set_shop_armed(shop_id, armed):
     db = SessionLocal()
     try:
@@ -397,6 +439,7 @@ def shop_to_dict(shop):
         "owner_phone": shop.owner_phone,
         "owner_email": shop.owner_email,
         "device_serial": device.device_serial if device else None,
+        "cameras": [camera_to_dict(camera) for camera in sorted(shop.cameras, key=lambda row: row.slot_number)],
         "armed": bool(shop.armed),
     }
 
@@ -422,8 +465,28 @@ def shop_summary_to_dict(shop):
         "owner_phone": shop.owner_phone,
         "owner_email": shop.owner_email,
         "device_serial": device.device_serial if device else None,
+        "camera_count": len([camera for camera in shop.cameras if camera.enabled]),
         "armed": bool(shop.armed),
     }
+
+
+def get_or_seed_camera_inventory(db, payload):
+    inventory = db.get(CameraInventory, payload["camera_serial"])
+    if inventory is not None:
+        return inventory
+
+    if payload["camera_ip"] and payload["camera_username"] and payload["camera_password"]:
+        inventory = CameraInventory(
+            camera_serial=payload["camera_serial"],
+            camera_ip=payload["camera_ip"],
+            camera_username=payload["camera_username"],
+            camera_password=payload["camera_password"],
+        )
+        db.add(inventory)
+        db.flush()
+        return inventory
+
+    return None
 
 
 @app.post("/auth/signup")
@@ -592,6 +655,96 @@ def my_shops():
             .all()
         )
         return jsonify({"ok": True, "shops": [shop_summary_to_dict(shop) for shop in shop_rows]})
+    finally:
+        db.close()
+
+
+@app.post("/shop/<shop_id>/camera")
+@auth_required
+def register_camera(shop_id):
+    try:
+        payload = parse_camera_registration(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        shop, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        inventory = get_or_seed_camera_inventory(db, payload)
+        if inventory is None:
+            return jsonify({
+                "ok": False,
+                "error": "camera_serial is not in AMTECH camera inventory",
+                "camera_serial": payload["camera_serial"],
+            }), 404
+
+        existing_camera = (
+            db.query(Camera)
+            .filter(Camera.camera_serial == payload["camera_serial"])
+            .first()
+        )
+        if existing_camera is not None and existing_camera.shop_id != shop.id:
+            return jsonify({
+                "ok": False,
+                "error": "camera_serial is already registered",
+                "camera_serial": payload["camera_serial"],
+            }), 409
+
+        camera = (
+            db.query(Camera)
+            .filter(Camera.shop_id == shop.id, Camera.slot_number == payload["slot_number"])
+            .first()
+        )
+        if camera is None:
+            camera = Camera(
+                id=str(uuid4()),
+                shop=shop,
+                camera_serial=payload["camera_serial"],
+                slot_number=payload["slot_number"],
+                enabled=True,
+            )
+            db.add(camera)
+        else:
+            camera.camera_serial = payload["camera_serial"]
+            camera.enabled = True
+
+        db.commit()
+        db.refresh(camera)
+        return jsonify({"ok": True, "camera": camera_to_dict(camera)}), 201
+    except IntegrityError:
+        db.rollback()
+        return jsonify({
+            "ok": False,
+            "error": "camera_serial or slot_number is already registered",
+            "camera_serial": payload["camera_serial"],
+            "slot_number": payload["slot_number"],
+        }), 409
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.get("/shop/<shop_id>/cameras")
+@auth_required
+def get_shop_cameras(shop_id):
+    db = SessionLocal()
+    try:
+        shop, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        camera_rows = (
+            db.query(Camera)
+            .filter(Camera.shop_id == shop.id)
+            .order_by(Camera.slot_number.asc())
+            .all()
+        )
+        return jsonify({"ok": True, "shop_id": shop.id, "cameras": [camera_to_dict(camera) for camera in camera_rows]})
     finally:
         db.close()
 

@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, create_engine, inspect, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
@@ -36,6 +36,7 @@ class Shop(Base):
 
     user = relationship("User", back_populates="shops")
     devices = relationship("Device", back_populates="shop")
+    cameras = relationship("Camera", back_populates="shop")
     alerts = relationship("Alert", back_populates="shop")
 
 
@@ -49,6 +50,34 @@ class Device(Base):
     status = Column(String(32), nullable=False, default="offline")
 
     shop = relationship("Shop", back_populates="devices")
+
+
+class CameraInventory(Base):
+    __tablename__ = "camera_inventory"
+
+    camera_serial = Column(String(255), primary_key=True)
+    camera_ip = Column(String(255), nullable=False)
+    camera_username = Column(String(255), nullable=False)
+    camera_password = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class Camera(Base):
+    __tablename__ = "cameras"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "slot_number", name="uq_cameras_shop_slot"),
+        UniqueConstraint("camera_serial", name="uq_cameras_camera_serial"),
+    )
+
+    id = Column(String(128), primary_key=True)
+    shop_id = Column(String(128), ForeignKey("shops.id"), nullable=False, index=True)
+    camera_serial = Column(String(255), ForeignKey("camera_inventory.camera_serial"), nullable=False)
+    slot_number = Column(Integer, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    shop = relationship("Shop", back_populates="cameras")
+    inventory = relationship("CameraInventory")
 
 
 class Alert(Base):
@@ -90,6 +119,67 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 def init_db():
     Base.metadata.create_all(bind=engine)
     run_migrations()
+    seed_camera_inventory()
+
+
+def camera_inventory_seed_rows():
+    raw_seed = os.getenv("AMTECH_CAMERA_INVENTORY", "").strip()
+    if raw_seed:
+        rows = []
+        for entry in raw_seed.split(";"):
+            parts = [part.strip() for part in entry.split(",")]
+            if len(parts) != 4 or not all(parts):
+                print(f"Skipping invalid AMTECH_CAMERA_INVENTORY entry: {entry}", flush=True)
+                continue
+            rows.append({
+                "camera_serial": parts[0].upper(),
+                "camera_ip": parts[1],
+                "camera_username": parts[2],
+                "camera_password": parts[3],
+            })
+        return rows
+
+    return [
+        {
+            "camera_serial": os.getenv("AMTECH_CAMERA_1_SERIAL", "CAM-0001").upper(),
+            "camera_ip": os.getenv("AMTECH_CAMERA_1_IP", "192.168.0.4"),
+            "camera_username": os.getenv("AMTECH_CAMERA_1_USERNAME", "Amtech"),
+            "camera_password": os.getenv("AMTECH_CAMERA_1_PASSWORD", "Amtech123"),
+        },
+        {
+            "camera_serial": os.getenv("AMTECH_CAMERA_2_SERIAL", "CAM-0002").upper(),
+            "camera_ip": os.getenv("AMTECH_CAMERA_2_IP", "192.168.0.7"),
+            "camera_username": os.getenv("AMTECH_CAMERA_2_USERNAME", "Amtech1"),
+            "camera_password": os.getenv("AMTECH_CAMERA_2_PASSWORD", "Amtech1234"),
+        },
+    ]
+
+
+def seed_camera_inventory():
+    rows = camera_inventory_seed_rows()
+    if not rows:
+        return
+
+    with engine.begin() as connection:
+        for row in rows:
+            existing = connection.execute(
+                text("SELECT camera_serial FROM camera_inventory WHERE camera_serial = :camera_serial"),
+                {"camera_serial": row["camera_serial"]},
+            ).first()
+            if existing is not None:
+                continue
+
+            connection.execute(
+                text(
+                    "INSERT INTO camera_inventory "
+                    "(camera_serial, camera_ip, camera_username, camera_password, created_at) "
+                    "VALUES (:camera_serial, :camera_ip, :camera_username, :camera_password, :created_at)"
+                ),
+                {
+                    **row,
+                    "created_at": datetime.now(timezone.utc),
+                },
+            )
 
 
 def run_migrations():
