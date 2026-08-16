@@ -210,7 +210,7 @@ Baseline 480 letterbox: TP=27 FP=0 TN=2 FN=25, recall=51.9%, avg total=848ms
 
 CLAHE is enabled by default because it gained five net true positives with no new false positives. A direct-JPEG optimization was tested, but it changed detector behavior and did not keep the recall gain, so production keeps the PPM + ffmpeg JPEG encode path.
 
-Person detection now uses single-frame confirmation for faster response. Before finalizing that change, the two no-person ground-truth images (`data_21.jpg` and `data_45.jpg`) were rerun on the real board through the production 480 letterbox + CLAHE path at threshold `>0.25`; both returned `NO_PERSON_DETECTED`, so false positives remained `0/2` on the empty-scene subset.
+Person detection now uses 2-frame confirmation per camera source. A 1-frame confirmation test was tried for faster response, but real parking-camera testing produced low-confidence phantom person detections immediately after arming. The production path therefore uses 2 qualifying frames plus a 10-second camera-only grace period after arming. Shutter, panic, and smoke triggers remain immediate and are not delayed by this camera grace period.
 
 Production model decision:
 

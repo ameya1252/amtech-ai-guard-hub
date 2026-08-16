@@ -22,6 +22,11 @@ static void check_int(const char *label, int actual, int expected)
     }
 }
 
+static void expire_camera_arm_grace(void)
+{
+    alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS);
+}
+
 static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
 {
 #ifdef SIMULATE_GPIO
@@ -180,6 +185,12 @@ static void send_person_frame(void)
     alarm_logic_end_frame();
 }
 
+static void send_two_person_frames(void)
+{
+    send_person_frame();
+    send_person_frame();
+}
+
 static void check_person_retrigger(void)
 {
 #ifdef SIMULATE_GPIO
@@ -191,9 +202,12 @@ static void check_person_retrigger(void)
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
+    expire_camera_arm_grace();
 
     send_person_frame();
-    check_int("person first single-frame trigger sets active alarm", alarm_logic_is_triggered(), 1);
+    check_int("person first frame does not trigger with 2-frame confirmation", alarm_logic_is_triggered(), 0);
+    send_person_frame();
+    check_int("person second frame triggers active alarm", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
     check_int("person first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
 #endif
@@ -203,12 +217,12 @@ static void check_person_retrigger(void)
     check_int("person first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
 
-    send_person_frame();
+    send_two_person_frames();
 #ifdef SIMULATE_GPIO
-    check_int("person second single-frame trigger restarts siren ON/LOW",
+    check_int("person second 2-frame trigger restarts siren ON/LOW",
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
               0);
-    check_int("person second single-frame trigger keeps strobe ON/LOW",
+    check_int("person second 2-frame trigger keeps strobe ON/LOW",
               gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
               0);
 #endif
@@ -230,10 +244,16 @@ static void check_camera_sources_confirm_independently(void)
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
+    expire_camera_arm_grace();
 
     alarm_logic_handle_detection_source(0, "person", 0.82f, "intrusion-front");
     alarm_logic_end_frame_source("intrusion-front");
-    check_int("single front frame triggers front intrusion",
+    check_int("single front frame does not trigger front intrusion",
+              alarm_logic_is_triggered(),
+              0);
+    alarm_logic_handle_detection_source(0, "person", 0.82f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    check_int("second front frame triggers front intrusion",
               alarm_logic_is_triggered(),
               1);
 #ifdef SIMULATE_MODEM
@@ -252,9 +272,15 @@ static void check_camera_sources_confirm_independently(void)
 #endif
 
     alarm_logic_set_armed(1);
+    expire_camera_arm_grace();
     alarm_logic_handle_detection_source(0, "person", 0.83f, "intrusion-parking");
     alarm_logic_end_frame_source("intrusion-parking");
-    check_int("single parking frame triggers parking intrusion",
+    check_int("single parking frame does not trigger parking intrusion",
+              alarm_logic_is_triggered(),
+              0);
+    alarm_logic_handle_detection_source(0, "person", 0.83f, "intrusion-parking");
+    alarm_logic_end_frame_source("intrusion-parking");
+    check_int("second parking frame triggers parking intrusion",
               alarm_logic_is_triggered(),
               1);
 #ifdef SIMULATE_MODEM
@@ -263,6 +289,67 @@ static void check_camera_sources_confirm_independently(void)
                      "AMTECH ALERT: Person detected on the parking camera while armed.") == 0,
               1);
 #endif
+}
+
+static void check_camera_arm_grace_period(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+
+    alarm_logic_handle_detection_source(0, "person", 0.80f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    alarm_logic_handle_detection_source(0, "person", 0.82f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    check_int("camera detections during arm grace do not trigger",
+              alarm_logic_is_triggered(),
+              0);
+
+    alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS - 1);
+    alarm_logic_handle_detection_source(0, "person", 0.83f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    check_int("camera detection before grace expiry still does not trigger",
+              alarm_logic_is_triggered(),
+              0);
+
+    alarm_logic_tick(1);
+    alarm_logic_handle_detection_source(0, "person", 0.84f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    check_int("first camera frame after grace does not trigger",
+              alarm_logic_is_triggered(),
+              0);
+    alarm_logic_handle_detection_source(0, "person", 0.85f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    check_int("second camera frame after grace triggers",
+              alarm_logic_is_triggered(),
+              1);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_shutter_sensor(1);
+    check_int("shutter still triggers during camera grace",
+              alarm_logic_is_triggered(),
+              1);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_panic(1);
+    check_int("panic still triggers during camera grace",
+              alarm_logic_is_triggered(),
+              1);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_smoke(1);
+    check_int("smoke still triggers during camera grace",
+              alarm_logic_is_triggered(),
+              1);
 }
 
 static void check_smoke_triggers_regardless_of_armed_state(void)
@@ -336,6 +423,7 @@ int main(void)
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_shop_id("amtech-demo-shop");
     alarm_logic_set_armed(1);
+    expire_camera_arm_grace();
 
 #ifdef SIMULATE_GPIO
     check_int("siren initializes OFF/HIGH", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
@@ -349,7 +437,11 @@ int main(void)
     alarm_logic_handle_detection(0, "person", 0.80f);
     alarm_logic_end_frame();
 
-    check_int("person detection triggers after 1 frame", alarm_logic_is_triggered(), 1);
+    check_int("person detection does not trigger after 1 frame", alarm_logic_is_triggered(), 0);
+    alarm_logic_handle_detection(0, "person", 0.80f);
+    alarm_logic_end_frame();
+
+    check_int("person detection triggers after 2 frames", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
     check_int("siren turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("strobe turns ON/LOW when alarm triggers", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
@@ -465,6 +557,7 @@ int main(void)
     check_shutter_retrigger();
     check_person_retrigger();
     check_camera_sources_confirm_independently();
+    check_camera_arm_grace_period();
     check_call_state_ticks_without_blocking_alarm_flow();
 
     if (failures == 0)

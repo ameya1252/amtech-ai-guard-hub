@@ -158,6 +158,7 @@ static void check_cross_camera_frames_do_not_mix(void)
     gpio_reset_simulated_values();
     alarm_logic_init(42);
     alarm_logic_set_armed(1);
+    alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS);
 
     camera_detection_set_simulated_result_for_source("front", 1, 0.82f);
     camera_detection_set_simulated_result_for_source("parking", 1, 0.73f);
@@ -173,12 +174,18 @@ static void check_cross_camera_frames_do_not_mix(void)
                                          &parking);
 
     apply_camera_frame_to_alarm(&front);
-    check_int("single front camera frame triggers front-source alarm", alarm_logic_is_triggered(), 1);
+    check_int("single front camera frame does not trigger front-source alarm", alarm_logic_is_triggered(), 0);
+    apply_camera_frame_to_alarm(&front);
+    check_int("second front camera frame triggers front-source alarm", alarm_logic_is_triggered(), 1);
     check_int("front-source camera detection turns siren ON/LOW", gpio_get_simulated_value(42), 0);
 
     alarm_logic_reset();
+    alarm_logic_set_armed(1);
+    alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS);
     apply_camera_frame_to_alarm(&parking);
-    check_int("single parking camera frame triggers parking-source alarm", alarm_logic_is_triggered(), 1);
+    check_int("single parking camera frame does not trigger parking-source alarm", alarm_logic_is_triggered(), 0);
+    apply_camera_frame_to_alarm(&parking);
+    check_int("second parking camera frame triggers parking-source alarm", alarm_logic_is_triggered(), 1);
     check_int("parking-source camera detection turns siren ON/LOW", gpio_get_simulated_value(42), 0);
 }
 

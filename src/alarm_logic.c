@@ -8,7 +8,7 @@
 
 #define PERSON_CLASS_ID 0
 #define PERSON_CONFIDENCE_THRESHOLD 0.25f
-#define REQUIRED_CONSECUTIVE_FRAMES 1
+#define REQUIRED_CONSECUTIVE_FRAMES 2
 #define SHOP_ID_MAX_SIZE 64
 #define AMTECH_STROBE_GPIO_PIN 48
 #define AMTECH_DETECTION_SOURCE_MAX 4
@@ -28,6 +28,7 @@ static int siren_active = 0;
 static unsigned int siren_elapsed_ms = 0;
 static int alert_dispatch_sent_this_incident = 0;
 static unsigned int alert_dispatch_elapsed_ms = 0;
+static unsigned int camera_arm_grace_elapsed_ms = AMTECH_CAMERA_ARM_GRACE_MS;
 static int armed = 0;
 static int alarm_triggered = 0;
 static char alarm_shop_id[SHOP_ID_MAX_SIZE] = "amtech-demo-shop";
@@ -130,6 +131,7 @@ void alarm_logic_init(int gpio_pin)
     siren_elapsed_ms = 0;
     alert_dispatch_sent_this_incident = 0;
     alert_dispatch_elapsed_ms = 0;
+    camera_arm_grace_elapsed_ms = AMTECH_CAMERA_ARM_GRACE_MS;
     armed = 0;
     alarm_triggered = 0;
     reset_detection_sources();
@@ -160,8 +162,16 @@ void alarm_logic_set_shop_id(const char *shop_id)
 
 void alarm_logic_set_armed(int next_armed)
 {
-    armed = next_armed ? 1 : 0;
+    int normalized_armed = next_armed ? 1 : 0;
+
+    if (armed == normalized_armed)
+    {
+        return;
+    }
+
+    armed = normalized_armed;
     clear_detection_frame_flags();
+    camera_arm_grace_elapsed_ms = armed ? 0 : AMTECH_CAMERA_ARM_GRACE_MS;
 
     printf("Alarm: system %s\n", armed ? "ARMED" : "DISARMED");
 }
@@ -211,6 +221,7 @@ void alarm_logic_reset(void)
     siren_elapsed_ms = 0;
     alert_dispatch_sent_this_incident = 0;
     alert_dispatch_elapsed_ms = 0;
+    camera_arm_grace_elapsed_ms = AMTECH_CAMERA_ARM_GRACE_MS;
     reset_detection_sources();
     pending_alarm_event_type = "intrusion";
 
@@ -236,6 +247,18 @@ void alarm_logic_tick(unsigned int elapsed_ms)
     }
 
     alert_dispatch_tick(elapsed_ms);
+
+    if (armed && camera_arm_grace_elapsed_ms < AMTECH_CAMERA_ARM_GRACE_MS)
+    {
+        if (elapsed_ms > AMTECH_CAMERA_ARM_GRACE_MS - camera_arm_grace_elapsed_ms)
+        {
+            camera_arm_grace_elapsed_ms = AMTECH_CAMERA_ARM_GRACE_MS;
+        }
+        else
+        {
+            camera_arm_grace_elapsed_ms += elapsed_ms;
+        }
+    }
 
     if (alarm_triggered &&
         alert_dispatch_sent_this_incident &&
@@ -308,6 +331,14 @@ void alarm_logic_handle_detection_source(int class_id,
 
     if (!armed)
     {
+        return;
+    }
+
+    if (camera_arm_grace_elapsed_ms < AMTECH_CAMERA_ARM_GRACE_MS)
+    {
+        printf("Alarm: camera detection ignored during arm grace period (%u/%u ms)\n",
+               camera_arm_grace_elapsed_ms,
+               AMTECH_CAMERA_ARM_GRACE_MS);
         return;
     }
 

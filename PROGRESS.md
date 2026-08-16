@@ -148,7 +148,8 @@ Person detection:
 
 - Person class is class ID `0` or class name `"person"`.
 - Confidence must be greater than `0.25`, based on the 54-image ground-truth threshold sweep.
-- A single qualifying camera frame triggers the person-detection alarm path for faster response.
+- Camera person detection requires 2 qualifying frames from the same camera source.
+- After the system arms, camera detections have a 10-second camera-only grace period; they are logged but cannot trigger during that window. Shutter, panic, and smoke triggers are not delayed by this grace period.
 - Person detection does not trigger while DISARMED.
 
 Siren and strobe:
