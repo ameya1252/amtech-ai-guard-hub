@@ -147,6 +147,27 @@ Notes:
 - `SMOKE_ENABLED=0` is the default so unwired smoke pins cannot false-trigger.
 - `MODEM_DEVICE` defaults to `/dev/ttyS5` but is configurable until the final PCB UART mapping is locked.
 
+Future app/backend device configuration should map UI controls to these config keys:
+
+```text
+SHUTTER_COUNT=1|2
+PANIC_ENABLED=0|1
+SMOKE_ENABLED=0|1
+CAMERA_ENABLED=0|1
+CAMERA_RTSP_URL=rtsp://...
+CAMERA2_ENABLED=0|1
+CAMERA2_RTSP_URL=rtsp://...
+ALERT_CONTACT_1=+91...
+ALERT_CONTACT_2=+91...
+ALERT_CONTACT_3=+91...
+```
+
+Current firmware support status:
+
+- `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
+- `CAMERA_ENABLED` is not a separate parsed key yet; today, Camera 1 is enabled by setting non-empty `CAMERA_RTSP_URL` and disabled by leaving it empty.
+- `CAMERA2_ENABLED` and `CAMERA2_RTSP_URL` are planned keys for the future second-camera path. They are documented here so the app/backend config screen can use stable names later, but current firmware ignores them until Camera 2 support is implemented.
+
 ## Runtime Loop Build
 
 The runtime now links pthreads because camera detection runs in a background thread while GPIO interrupt handling stays in the main thread.
