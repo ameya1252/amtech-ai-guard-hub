@@ -11,7 +11,9 @@
 #define AMTECH_CAMERA_DEMO_TIMEOUT_SECONDS 30
 #define AMTECH_CAMERA_CLAHE_BIN "/root/amtech_clahe_ppm"
 #define AMTECH_CAMERA_DEMO_BIN "/root/rknn_yolov5_demo_export/rknn_yolov5_demo"
+#define AMTECH_CAMERA_DEMO_WORKDIR "/root/rknn_yolov5_demo_export"
 #define AMTECH_CAMERA_MODEL_PATH "/root/rknn_yolov5_demo_export/model/yolov5.rknn"
+#define AMTECH_CAMERA_ALARM_PERSON_PREFIX "Alarm: person detected confidence="
 
 static void fill_result_identity(camera_detection_result_t *result,
                                  const char *source,
@@ -268,7 +270,10 @@ static int wait_for_child(pid_t pid, const char *name, int timeout_seconds)
     }
 }
 
-static int run_command(char *const argv[], const char *stdout_path, int timeout_seconds)
+static int run_command_in_dir(char *const argv[],
+                              const char *stdout_path,
+                              int timeout_seconds,
+                              const char *working_dir)
 {
     pid_t pid;
 
@@ -281,6 +286,11 @@ static int run_command(char *const argv[], const char *stdout_path, int timeout_
 
     if (pid == 0)
     {
+        if (working_dir != NULL && chdir(working_dir) != 0)
+        {
+            _exit(125);
+        }
+
         if (stdout_path != NULL)
         {
             int fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -298,6 +308,11 @@ static int run_command(char *const argv[], const char *stdout_path, int timeout_
     }
 
     return wait_for_child(pid, argv[0], timeout_seconds);
+}
+
+static int run_command(char *const argv[], const char *stdout_path, int timeout_seconds)
+{
+    return run_command_in_dir(argv, stdout_path, timeout_seconds, NULL);
 }
 
 static int capture_frame(const char *rtsp_url, const camera_detection_paths_t *paths)
@@ -371,7 +386,10 @@ static int run_detection_demo(const camera_detection_paths_t *paths)
         (char *)paths->frame_path,
         NULL};
 
-    return run_command(argv, paths->output_path, AMTECH_CAMERA_DEMO_TIMEOUT_SECONDS);
+    return run_command_in_dir(argv,
+                              paths->output_path,
+                              AMTECH_CAMERA_DEMO_TIMEOUT_SECONDS,
+                              AMTECH_CAMERA_DEMO_WORKDIR);
 }
 
 static int parse_detection_output(const camera_detection_paths_t *paths, camera_detection_result_t *result)
@@ -396,6 +414,25 @@ static int parse_detection_output(const camera_detection_paths_t *paths, camera_
         char *cursor;
         char *token;
         float confidence;
+
+        if (strncmp(line,
+                    AMTECH_CAMERA_ALARM_PERSON_PREFIX,
+                    strlen(AMTECH_CAMERA_ALARM_PERSON_PREFIX)) == 0)
+        {
+            char *end = NULL;
+            const char *confidence_text = line + strlen(AMTECH_CAMERA_ALARM_PERSON_PREFIX);
+
+            confidence = strtof(confidence_text, &end);
+            if (end != confidence_text)
+            {
+                result->person_detected = 1;
+                if (confidence > result->max_confidence)
+                {
+                    result->max_confidence = confidence;
+                }
+            }
+            continue;
+        }
 
         if (strncmp(line, "person @", 8) != 0)
         {

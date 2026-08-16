@@ -104,37 +104,50 @@ static int start_current_call_attempt(void)
 {
     const char *number;
 
-    while (escalation_contact_index < AMTECH_ALERT_CONTACT_COUNT &&
-           !contact_is_configured(escalation_contacts[escalation_contact_index]))
+    while (escalation_contact_index < AMTECH_ALERT_CONTACT_COUNT)
     {
-        escalation_contact_index++;
-        escalation_attempt = 0;
+        while (escalation_contact_index < AMTECH_ALERT_CONTACT_COUNT &&
+               !contact_is_configured(escalation_contacts[escalation_contact_index]))
+        {
+            escalation_contact_index++;
+            escalation_attempt = 0;
+        }
+
+        if (escalation_contact_index >= AMTECH_ALERT_CONTACT_COUNT)
+        {
+            break;
+        }
+
+        number = escalation_contacts[escalation_contact_index];
+        printf("Alert dispatch: calling contact %d attempt %d: %s\n",
+               escalation_contact_index + 1,
+               escalation_attempt + 1,
+               number);
+
+        if (modem_make_voice_call(number) == 0)
+        {
+            escalation_state = ALERT_CALL_ESCALATION_WAITING;
+            escalation_attempt_elapsed_ms = 0;
+            escalation_answer_confirm_ms = 0;
+            return 0;
+        }
+
+        printf("Alert dispatch: failed to start voice call to contact %d attempt %d, treating as unanswered\n",
+               escalation_contact_index + 1,
+               escalation_attempt + 1);
+
+        escalation_attempt++;
+        if (escalation_attempt >= ALERT_CALL_ATTEMPTS_PER_CONTACT)
+        {
+            escalation_contact_index++;
+            escalation_attempt = 0;
+        }
     }
 
-    if (escalation_contact_index >= AMTECH_ALERT_CONTACT_COUNT)
-    {
-        escalation_state = ALERT_CALL_ESCALATION_DONE;
-        printf("Alert dispatch: call escalation complete, no more contacts\n");
-        return 0;
-    }
-
-    number = escalation_contacts[escalation_contact_index];
-    printf("Alert dispatch: calling contact %d attempt %d: %s\n",
-           escalation_contact_index + 1,
-           escalation_attempt + 1,
-           number);
-
-    if (modem_make_voice_call(number) != 0)
-    {
-        printf("Alert dispatch: failed to start voice call to contact %d\n",
-               escalation_contact_index + 1);
-        escalation_state = ALERT_CALL_ESCALATION_FAILED;
-        return -1;
-    }
-
-    escalation_state = ALERT_CALL_ESCALATION_WAITING;
+    escalation_state = ALERT_CALL_ESCALATION_DONE;
     escalation_attempt_elapsed_ms = 0;
     escalation_answer_confirm_ms = 0;
+    printf("Alert dispatch: call escalation complete, no more contacts\n");
     return 0;
 }
 

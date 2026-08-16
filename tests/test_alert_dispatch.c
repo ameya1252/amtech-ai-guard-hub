@@ -238,6 +238,55 @@ static void run_all_contacts_exhausted(void)
 #endif
 }
 
+static void run_dial_start_failure_advances_escalation(void)
+{
+#ifdef SIMULATE_MODEM
+    modem_call_status_t statuses[] = {
+        MODEM_CALL_STATUS_ENDED,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE,
+        MODEM_CALL_STATUS_ACTIVE};
+    int call_start_results[] = {
+        0,
+        -1,
+        0};
+
+    printf("\nScenario 5: dial-start failure is treated as unanswered and escalation continues\n");
+    modem_reset_simulated_state();
+    alert_dispatch_reset();
+    modem_set_simulated_call_status_sequence(statuses, 4);
+    modem_set_simulated_call_start_results(call_start_results, 3);
+
+    check_int("scenario 5 dispatch starts", alert_dispatch_send("shutter-2"), 0);
+    check_sms_fanout();
+
+    tick_ms(1000);
+    check_int("scenario 5 first call ended, failed retry skipped to contact 2",
+              modem_get_simulated_call_count(),
+              3);
+    check_string("scenario 5 first call contact 1",
+                 modem_get_simulated_call_number_at(0),
+                 "+911111111111");
+    check_string("scenario 5 failed retry was contact 1",
+                 modem_get_simulated_call_number_at(1),
+                 "+911111111111");
+    check_string("scenario 5 third call advances to contact 2",
+                 modem_get_simulated_call_number_at(2),
+                 "+912222222222");
+    check_int("scenario 5 escalation remains active after dial failure",
+              alert_dispatch_get_call_escalation_state(),
+              ALERT_CALL_ESCALATION_WAITING);
+
+    tick_ms(1000);
+    tick_ms(1000);
+    tick_ms(1000);
+    tick_ms(1000);
+    check_int("scenario 5 contact 2 can still answer",
+              alert_dispatch_get_call_escalation_state(),
+              ALERT_CALL_ESCALATION_ANSWERED);
+#endif
+}
+
 int main(void)
 {
     const char *config_path = "/tmp/amtech_alert_dispatch_config_for_test.txt";
@@ -268,6 +317,7 @@ int main(void)
     run_contact1_twice_then_contact2_answered();
     run_brief_active_false_positive();
     run_all_contacts_exhausted();
+    run_dial_start_failure_advances_escalation();
 
     unsetenv("AMTECH_CONFIG_PATH");
     remove(config_path);

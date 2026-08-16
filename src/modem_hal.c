@@ -42,6 +42,9 @@ static char simulated_call_numbers[MODEM_HAL_SIMULATED_HISTORY_MAX][AMTECH_ALERT
 static modem_call_status_t simulated_status_sequence[MODEM_HAL_SIMULATED_STATUS_MAX];
 static int simulated_status_sequence_count = 0;
 static int simulated_status_sequence_index = 0;
+static int simulated_call_start_results[MODEM_HAL_SIMULATED_HISTORY_MAX];
+static int simulated_call_start_result_count = 0;
+static int simulated_call_start_result_index = 0;
 #endif
 
 int modem_get_registration_status(void)
@@ -421,6 +424,14 @@ int modem_make_voice_call(const char *number)
                  number);
     }
     simulated_call_count++;
+    if (simulated_call_start_result_index < simulated_call_start_result_count &&
+        simulated_call_start_results[simulated_call_start_result_index++] != 0)
+    {
+        printf("Modem HAL: simulated voice call command failed for %s\n", number);
+        voice_call_active = 0;
+        voice_call_status = MODEM_CALL_STATUS_FAILED;
+        return -1;
+    }
 #else
     if (sim_modem_send_at(command, response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
     {
@@ -648,6 +659,30 @@ void modem_set_simulated_call_status_sequence(const modem_call_status_t *statuse
     simulated_status_sequence_count = count;
 }
 
+void modem_set_simulated_call_start_results(const int *results, int count)
+{
+    int i;
+
+    simulated_call_start_result_count = 0;
+    simulated_call_start_result_index = 0;
+
+    if (results == NULL || count <= 0)
+    {
+        return;
+    }
+
+    if (count > MODEM_HAL_SIMULATED_HISTORY_MAX)
+    {
+        count = MODEM_HAL_SIMULATED_HISTORY_MAX;
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        simulated_call_start_results[i] = results[i];
+    }
+    simulated_call_start_result_count = count;
+}
+
 void modem_reset_simulated_state(void)
 {
     int i;
@@ -665,6 +700,12 @@ void modem_reset_simulated_state(void)
     }
     simulated_status_sequence_count = 0;
     simulated_status_sequence_index = 0;
+    simulated_call_start_result_count = 0;
+    simulated_call_start_result_index = 0;
+    for (i = 0; i < MODEM_HAL_SIMULATED_HISTORY_MAX; i++)
+    {
+        simulated_call_start_results[i] = 0;
+    }
     voice_call_active = 0;
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
