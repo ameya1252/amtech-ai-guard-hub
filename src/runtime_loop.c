@@ -778,6 +778,11 @@ static void runtime_camera_health_text(const char *source, char *buffer, size_t 
     pthread_mutex_unlock(&camera_health_mutex);
 }
 
+static int runtime_camera_detection_should_run(void)
+{
+    return alarm_logic_is_armed();
+}
+
 static void runtime_build_camera_status(const amtech_config_t *config,
                                         int camera_index,
                                         char *buffer,
@@ -911,6 +916,11 @@ int runtime_test_static_calibration_active(void)
 void runtime_test_note_camera_health(const char *source, int success)
 {
     runtime_camera_health_note(source, success);
+}
+
+int runtime_test_camera_detection_should_run(void)
+{
+    return runtime_camera_detection_should_run();
 }
 #endif
 
@@ -1523,6 +1533,12 @@ static void *camera_thread_main(void *arg)
     {
         camera_detection_result_t result;
 
+        if (!runtime_camera_detection_should_run())
+        {
+            sleep(AMTECH_CAMERA_RETRY_DELAY_SECONDS);
+            continue;
+        }
+
         if (camera_detection_run_once_for_source(context->source,
                                                  context->event_type,
                                                  context->rtsp_url,
@@ -1595,6 +1611,11 @@ static void maybe_run_simulated_camera_once(const amtech_config_t *config)
         return;
     }
 
+    if (!runtime_camera_detection_should_run())
+    {
+        return;
+    }
+
     for (i = 0; i < camera_count; i++)
     {
         camera_detection_result_t result;
@@ -1614,6 +1635,13 @@ static void maybe_run_simulated_camera_once(const amtech_config_t *config)
         }
     }
 }
+
+#ifdef AMTECH_RUNTIME_LOOP_TEST
+void runtime_test_run_simulated_camera_once(const amtech_config_t *config)
+{
+    maybe_run_simulated_camera_once(config);
+}
+#endif
 #endif
 
 static void tick_schedule_elapsed_seconds(long long *last_tick_ms)
@@ -2072,6 +2100,40 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
     runtime_static_calibration_tick(1000);
     runtime_poll_sms_remote_control(config);
 }
+
+#if defined(AMTECH_RUNTIME_LOOP_TEST) && defined(SIMULATE_CAMERA)
+void runtime_test_run_simulated_camera_once(const amtech_config_t *config)
+{
+    runtime_camera_config_t camera_configs[AMTECH_RUNTIME_MAX_CAMERAS];
+    int camera_count;
+    int camera_index;
+
+    if (!runtime_camera_detection_should_run())
+    {
+        return;
+    }
+
+    camera_count = runtime_build_camera_configs(config, camera_configs, AMTECH_RUNTIME_MAX_CAMERAS);
+    for (camera_index = 0; camera_index < camera_count; camera_index++)
+    {
+        camera_detection_result_t camera_result;
+
+        if (camera_detection_run_once_for_source(camera_configs[camera_index].source,
+                                                 camera_configs[camera_index].event_type,
+                                                 camera_configs[camera_index].rtsp_url,
+                                                 NULL,
+                                                 &camera_result) == 0)
+        {
+            runtime_camera_health_note(camera_configs[camera_index].source, 1);
+            runtime_process_camera_detection_result(&camera_result);
+        }
+        else
+        {
+            runtime_camera_health_note(camera_configs[camera_index].source, 0);
+        }
+    }
+}
+#endif
 #endif
 
 #ifndef AMTECH_RUNTIME_LOOP_NO_MAIN

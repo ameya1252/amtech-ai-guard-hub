@@ -55,6 +55,7 @@ static simulated_camera_result_t simulated_results[2] = {
 static unsigned int simulated_delay_us = 0;
 static int simulated_active_inference = 0;
 static int simulated_max_concurrent_inference = 0;
+static int simulated_run_count = 0;
 
 static simulated_camera_result_t *find_simulated_result(const char *source)
 {
@@ -123,12 +124,18 @@ void camera_detection_reset_simulated_metrics(void)
 {
     simulated_active_inference = 0;
     simulated_max_concurrent_inference = 0;
+    simulated_run_count = 0;
     simulated_delay_us = 0;
 }
 
 int camera_detection_get_simulated_max_concurrent_inference(void)
 {
     return simulated_max_concurrent_inference;
+}
+
+int camera_detection_get_simulated_run_count(void)
+{
+    return simulated_run_count;
 }
 
 static void simulated_inference_enter(void)
@@ -172,6 +179,7 @@ int camera_detection_run_once_for_source(const char *source,
     }
 
     fill_result_identity(result, source, event_type);
+    simulated_run_count++;
 
     if (inference_mutex != NULL)
     {

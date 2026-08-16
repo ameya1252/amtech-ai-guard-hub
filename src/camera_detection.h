@@ -45,6 +45,7 @@ void camera_detection_set_simulated_result_box_for_source(const char *source,
 void camera_detection_set_simulated_delay_us(unsigned int delay_us);
 void camera_detection_reset_simulated_metrics(void);
 int camera_detection_get_simulated_max_concurrent_inference(void);
+int camera_detection_get_simulated_run_count(void);
 #endif
 
 #ifdef __cplusplus

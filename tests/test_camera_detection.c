@@ -1,5 +1,6 @@
 #include "alarm_logic.h"
 #include "camera_detection.h"
+#include "config.h"
 #include "gpio_control.h"
 #include "runtime_loop.h"
 
@@ -301,6 +302,34 @@ static void check_static_zones_are_independent_per_camera(void)
     check_int("front static zone filters front box independently", alarm_logic_is_triggered(), 0);
 }
 
+static void check_camera_detection_pauses_while_disarmed(void)
+{
+    amtech_config_t config;
+
+    amtech_config_set_defaults(&config);
+    config.camera_enabled = 1;
+    snprintf(config.camera_rtsp_url, sizeof(config.camera_rtsp_url), "%s", "rtsp://example/front");
+
+    gpio_reset_simulated_values();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+    camera_detection_reset_simulated_metrics();
+    camera_detection_set_simulated_result_box_for_source("front", 1, 0.82f, 10, 20, 110, 220);
+
+    runtime_test_run_simulated_camera_once(&config);
+    check_int("disarmed runtime reports camera detection paused", runtime_test_camera_detection_should_run(), 0);
+    check_int("disarmed runtime skips simulated camera capture", camera_detection_get_simulated_run_count(), 0);
+
+    runtime_test_set_armed(1);
+    runtime_test_run_simulated_camera_once(&config);
+    check_int("armed runtime reports camera detection active", runtime_test_camera_detection_should_run(), 1);
+    check_int("armed runtime runs simulated camera capture", camera_detection_get_simulated_run_count(), 1);
+
+    runtime_test_set_armed(0);
+    runtime_test_run_simulated_camera_once(&config);
+    check_int("disarmed runtime pauses camera capture again", camera_detection_get_simulated_run_count(), 1);
+}
+
 static void check_legacy_camera_wrapper(void)
 {
     camera_detection_result_t result;
@@ -326,6 +355,7 @@ int main(void)
     check_cross_camera_frames_do_not_mix();
     check_static_zone_filters_same_location_after_calibration();
     check_static_zones_are_independent_per_camera();
+    check_camera_detection_pauses_while_disarmed();
     check_legacy_camera_wrapper();
 
     if (failures == 0)
