@@ -34,6 +34,22 @@ static void check_string(const char *label, const char *actual, const char *expe
     }
 }
 
+static void check_contains(const char *label, const char *actual, const char *expected_substring)
+{
+    int matches = strstr(actual, expected_substring) != NULL;
+    const char *result = matches ? "PASS" : "FAIL";
+
+    printf("%s: got %s, expected substring %s: %s\n",
+           label,
+           actual,
+           expected_substring,
+           result);
+    if (!matches)
+    {
+        failures++;
+    }
+}
+
 static void check_shutter_state(const char *label, shutter_state_t actual, shutter_state_t expected)
 {
     const char *result = actual == expected ? "PASS" : "FAIL";
@@ -322,26 +338,70 @@ static void check_sms_remote_control(void)
     check_string("STOP no-active reply text", modem_get_simulated_last_sms_message(), "No active alarm");
     check_int("STOP no-active SMS deleted", modem_get_simulated_deleted_sms_count(), 7);
 
+    runtime_test_note_camera_health("front", 1);
+    runtime_test_note_camera_health("parking", 0);
+    config.shutter_count = 2;
+    config.smoke_enabled = 1;
+    config.camera_enabled = 1;
+    snprintf(config.camera_rtsp_url, sizeof(config.camera_rtsp_url), "%s", "rtsp://example/front");
+    config.camera2_enabled = 1;
+    snprintf(config.camera2_rtsp_url, sizeof(config.camera2_rtsp_url), "%s", "rtsp://example/parking");
+    modem_simulate_incoming_sms("+911111111111", "status");
+    check_int("STATUS SMS accepted from authorized sender", runtime_poll_sms_remote_control(&config), 1);
+    check_int("STATUS sends reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 3);
+    check_contains("STATUS starts with armed state", modem_get_simulated_last_sms_message(), "DISARMED; Panic cfg");
+    check_contains("STATUS includes shutter-1 configured", modem_get_simulated_last_sms_message(), "Sh1 cfg");
+    check_contains("STATUS includes shutter-2 configured", modem_get_simulated_last_sms_message(), "Sh2 cfg");
+    check_contains("STATUS includes smoke configured", modem_get_simulated_last_sms_message(), "Smoke cfg");
+    check_contains("STATUS includes front camera recent OK", modem_get_simulated_last_sms_message(), "Front cam recent OK");
+    check_contains("STATUS includes parking camera failing", modem_get_simulated_last_sms_message(), "Parking cam failing");
+    check_contains("STATUS includes modem last-known state", modem_get_simulated_last_sms_message(), "Modem POWER_OFF last-known");
+    check_int("STATUS SMS deleted", modem_get_simulated_deleted_sms_count(), 8);
+
+    config.shutter_count = 1;
+    config.smoke_enabled = 0;
+    config.camera_enabled = 1;
+    snprintf(config.camera_rtsp_url, sizeof(config.camera_rtsp_url), "%s", "rtsp://example/front");
+    config.camera2_enabled = 0;
+    config.camera2_rtsp_url[0] = '\0';
+    modem_simulate_incoming_sms("+912222222222", "STATUS");
+    check_int("STATUS SMS accepted with disabled optional devices", runtime_poll_sms_remote_control(&config), 1);
+    check_int("STATUS disabled-device reply count", modem_get_simulated_sms_count(), sms_count_after_trigger + 4);
+    check_contains("STATUS reports shutter-2 off", modem_get_simulated_last_sms_message(), "Sh2 off");
+    check_contains("STATUS reports smoke off", modem_get_simulated_last_sms_message(), "Smoke off");
+    check_contains("STATUS reports camera2 off", modem_get_simulated_last_sms_message(), "Parking cam off");
+    check_int("STATUS disabled-device SMS deleted", modem_get_simulated_deleted_sms_count(), 9);
+
+    modem_simulate_incoming_sms("+913333333333", "HeLp");
+    check_int("HELP SMS accepted from authorized sender", runtime_poll_sms_remote_control(&config), 1);
+    check_int("HELP sends reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
+    check_contains("HELP includes ARM", modem_get_simulated_last_sms_message(), "ARM - Arm system");
+    check_contains("HELP includes DISARM", modem_get_simulated_last_sms_message(), "DISARM - Disarm system");
+    check_contains("HELP includes STOP", modem_get_simulated_last_sms_message(), "STOP - Stop active alarm & disarm");
+    check_contains("HELP includes STATUS", modem_get_simulated_last_sms_message(), "STATUS - System status report");
+    check_contains("HELP includes HELP", modem_get_simulated_last_sms_message(), "HELP - This message");
+    check_int("HELP SMS deleted", modem_get_simulated_deleted_sms_count(), 10);
+
     alarm_logic_set_armed(1);
 
-    modem_simulate_incoming_sms("+919999999999", "DISARM");
+    modem_simulate_incoming_sms("+919999999999", "HELP");
     check_int("unknown sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
-    check_int("unknown sender does not disarm", alarm_logic_is_armed(), 1);
-    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 2);
-    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 8);
+    check_int("unknown sender does not change armed state", alarm_logic_is_armed(), 1);
+    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
+    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 11);
 
-    modem_simulate_incoming_sms("+911111111111", "STATUS");
+    modem_simulate_incoming_sms("+911111111111", "BANANA");
     check_int("malformed valid-sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
     check_int("malformed SMS leaves armed unchanged", alarm_logic_is_armed(), 1);
-    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 2);
-    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 9);
+    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
+    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 12);
 
     modem_make_voice_call("+911111111111");
     modem_simulate_incoming_sms("+911111111111", "DISARM");
     check_int("SMS poll still runs while voice call active", runtime_poll_sms_remote_control(&config), 1);
-    check_int("SMS deleted while call active", modem_get_simulated_deleted_sms_count(), 10);
+    check_int("SMS deleted while call active", modem_get_simulated_deleted_sms_count(), 13);
     check_int("DISARM clears armed while call active", alarm_logic_is_armed(), 0);
-    check_int("DISARM reply sent while call active", modem_get_simulated_sms_count(), sms_count_after_trigger + 3);
+    check_int("DISARM reply sent while call active", modem_get_simulated_sms_count(), sms_count_after_trigger + 6);
     modem_hangup_voice_call();
 }
 

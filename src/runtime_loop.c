@@ -3,6 +3,7 @@
 #include "config.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
+#include "modem_state.h"
 #include "runtime_loop.h"
 #include "schedule.h"
 #include "sensor_input.h"
@@ -41,6 +42,7 @@
 #define AMTECH_STATIC_ZONE_IOU_THRESHOLD 0.80f
 #define AMTECH_STATIC_ZONE_MIN_OCCURRENCES 3
 #define AMTECH_STATIC_ZONE_MAX_PER_CAMERA 8
+#define AMTECH_SMS_REPLY_MAX 256
 
 typedef enum
 {
@@ -82,6 +84,15 @@ typedef struct
     char source[AMTECH_CAMERA_SOURCE_MAX];
     runtime_static_zone_t zones[AMTECH_STATIC_ZONE_MAX_PER_CAMERA];
 } runtime_camera_static_state_t;
+
+typedef struct
+{
+    int used;
+    char source[AMTECH_CAMERA_SOURCE_MAX];
+    int success_count;
+    int failure_count;
+    int last_success;
+} runtime_camera_health_t;
 
 #ifndef SIMULATE_GPIO
 #ifndef SIMULATE_CAMERA
@@ -127,6 +138,8 @@ static const gpio_watch_t SMOKE_WATCH = {
     -1, -1, NULL, NULL, -1, 0};
 
 static runtime_camera_static_state_t static_camera_states[AMTECH_RUNTIME_MAX_CAMERAS];
+static runtime_camera_health_t camera_health_states[AMTECH_RUNTIME_MAX_CAMERAS];
+static pthread_mutex_t camera_health_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int static_calibration_active = 0;
 static unsigned int static_calibration_elapsed_ms = AMTECH_STATIC_CALIBRATION_MS;
 static int runtime_observed_armed = 0;
@@ -676,6 +689,161 @@ static int runtime_camera_detection_matches_static_zone(const camera_detection_r
     return 0;
 }
 
+static runtime_camera_health_t *runtime_find_camera_health(const char *source, int create)
+{
+    int i;
+    int empty_index = -1;
+
+    if (source == NULL || source[0] == '\0')
+    {
+        source = "front";
+    }
+
+    for (i = 0; i < AMTECH_RUNTIME_MAX_CAMERAS; i++)
+    {
+        if (camera_health_states[i].used &&
+            strcmp(camera_health_states[i].source, source) == 0)
+        {
+            return &camera_health_states[i];
+        }
+
+        if (!camera_health_states[i].used && empty_index < 0)
+        {
+            empty_index = i;
+        }
+    }
+
+    if (!create || empty_index < 0)
+    {
+        return NULL;
+    }
+
+    camera_health_states[empty_index].used = 1;
+    snprintf(camera_health_states[empty_index].source,
+             sizeof(camera_health_states[empty_index].source),
+             "%s",
+             source);
+    camera_health_states[empty_index].success_count = 0;
+    camera_health_states[empty_index].failure_count = 0;
+    camera_health_states[empty_index].last_success = 0;
+    return &camera_health_states[empty_index];
+}
+
+static void runtime_camera_health_note(const char *source, int success)
+{
+    runtime_camera_health_t *health;
+
+    pthread_mutex_lock(&camera_health_mutex);
+    health = runtime_find_camera_health(source, 1);
+    if (health != NULL)
+    {
+        if (success)
+        {
+            health->success_count++;
+            health->last_success = 1;
+        }
+        else
+        {
+            health->failure_count++;
+            health->last_success = 0;
+        }
+    }
+    pthread_mutex_unlock(&camera_health_mutex);
+}
+
+static void runtime_camera_health_text(const char *source, char *buffer, size_t buffer_size)
+{
+    runtime_camera_health_t snapshot;
+    runtime_camera_health_t *health;
+
+    if (buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+    snprintf(buffer, buffer_size, "%s", "no frame yet");
+
+    pthread_mutex_lock(&camera_health_mutex);
+    health = runtime_find_camera_health(source, 0);
+    if (health != NULL)
+    {
+        snapshot = *health;
+        if (snapshot.success_count > 0 || snapshot.failure_count > 0)
+        {
+            snprintf(buffer,
+                     buffer_size,
+                     "%s",
+                     snapshot.last_success ? "recent OK" : "failing");
+        }
+    }
+    pthread_mutex_unlock(&camera_health_mutex);
+}
+
+static void runtime_build_camera_status(const amtech_config_t *config,
+                                        int camera_index,
+                                        char *buffer,
+                                        size_t buffer_size)
+{
+    const char *source = camera_index == 2 ? "parking" : "front";
+    int enabled = camera_index == 2 ? config->camera2_enabled : config->camera_enabled;
+    const char *rtsp_url = camera_index == 2 ? config->camera2_rtsp_url : config->camera_rtsp_url;
+
+    if (!enabled || rtsp_url == NULL || rtsp_url[0] == '\0')
+    {
+        snprintf(buffer, buffer_size, "off");
+        return;
+    }
+
+    runtime_camera_health_text(source, buffer, buffer_size);
+}
+
+static void runtime_build_status_message(const amtech_config_t *config, char *buffer, size_t buffer_size)
+{
+    char front_camera[32];
+    char parking_camera[32];
+    const char *modem_name;
+    int modem_state;
+
+    if (buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+    buffer[0] = '\0';
+
+    if (config == NULL)
+    {
+        snprintf(buffer, buffer_size, "Status unavailable");
+        return;
+    }
+
+    runtime_build_camera_status(config, 1, front_camera, sizeof(front_camera));
+    runtime_build_camera_status(config, 2, parking_camera, sizeof(parking_camera));
+    modem_state = modem_get_registration_status();
+    modem_name = modem_state_name((modem_state_t)modem_state);
+
+    snprintf(buffer,
+             buffer_size,
+             "%s; Panic %s; Sh1 cfg; Sh2 %s; Smoke %s; Front cam %s; Parking cam %s; Modem %s last-known",
+             alarm_logic_is_armed() ? "ARMED" : "DISARMED",
+             config->panic_enabled ? "cfg" : "off",
+             config->shutter_count >= 2 ? "cfg" : "off",
+             config->smoke_enabled ? "cfg" : "off",
+             front_camera,
+             parking_camera,
+             modem_name);
+}
+
+static void runtime_build_help_message(char *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+
+    snprintf(buffer,
+             buffer_size,
+             "ARM - Arm system; DISARM - Disarm system; STOP - Stop active alarm & disarm; STATUS - System status report; HELP - This message");
+}
+
 void runtime_process_camera_detection_result(const camera_detection_result_t *result)
 {
     if (result == NULL)
@@ -738,6 +906,11 @@ void runtime_test_tick(unsigned int elapsed_ms)
 int runtime_test_static_calibration_active(void)
 {
     return static_calibration_active;
+}
+
+void runtime_test_note_camera_health(const char *source, int success)
+{
+    runtime_camera_health_note(source, success);
 }
 #endif
 
@@ -917,6 +1090,26 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         runtime_set_armed(0);
         modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
         printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "STATUS") == 0)
+    {
+        char reply[AMTECH_SMS_REPLY_MAX];
+
+        runtime_build_status_message(config, reply, sizeof(reply));
+        modem_send_sms(sms->sender, reply);
+        printf("Runtime: accepted SMS STATUS command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "HELP") == 0)
+    {
+        char reply[AMTECH_SMS_REPLY_MAX];
+
+        runtime_build_help_message(reply, sizeof(reply));
+        modem_send_sms(sms->sender, reply);
+        printf("Runtime: accepted SMS HELP command from %s\n", sms->sender);
         return 1;
     }
 
@@ -1164,6 +1357,26 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         return 1;
     }
 
+    if (strcmp(command, "STATUS") == 0)
+    {
+        char reply[AMTECH_SMS_REPLY_MAX];
+
+        runtime_build_status_message(config, reply, sizeof(reply));
+        modem_send_sms(sms->sender, reply);
+        printf("Runtime: accepted SMS STATUS command from %s\n", sms->sender);
+        return 1;
+    }
+
+    if (strcmp(command, "HELP") == 0)
+    {
+        char reply[AMTECH_SMS_REPLY_MAX];
+
+        runtime_build_help_message(reply, sizeof(reply));
+        modem_send_sms(sms->sender, reply);
+        printf("Runtime: accepted SMS HELP command from %s\n", sms->sender);
+        return 1;
+    }
+
     printf("Runtime: ignored unrecognized SMS command from authorized sender %s\n", sms->sender);
     return 0;
 }
@@ -1316,10 +1529,12 @@ static void *camera_thread_main(void *arg)
                                                  context->inference_mutex,
                                                  &result) == 0)
         {
+            runtime_camera_health_note(context->source, 1);
             camera_queue_publish(context->queue, &result);
         }
         else
         {
+            runtime_camera_health_note(context->source, 0);
             printf("Runtime: camera detection cycle failed source=%s\n", context->source);
             sleep(AMTECH_CAMERA_RETRY_DELAY_SECONDS);
         }
@@ -1390,7 +1605,12 @@ static void maybe_run_simulated_camera_once(const amtech_config_t *config)
                                                  NULL,
                                                  &result) == 0)
         {
+            runtime_camera_health_note(cameras[i].source, 1);
             runtime_process_camera_detection_result(&result);
+        }
+        else
+        {
+            runtime_camera_health_note(cameras[i].source, 0);
         }
     }
 }
@@ -1832,8 +2052,13 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
                                                      NULL,
                                                      &camera_result) == 0)
             {
+                runtime_camera_health_note(camera_configs[camera_index].source, 1);
                 runtime_process_camera_detection_result(&camera_result);
                 camera_processed = 1;
+            }
+            else
+            {
+                runtime_camera_health_note(camera_configs[camera_index].source, 0);
             }
         }
     }
