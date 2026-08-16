@@ -43,7 +43,7 @@
 #define AMTECH_STATIC_ZONE_MIN_OCCURRENCES 3
 #define AMTECH_STATIC_ZONE_MAX_PER_CAMERA 8
 #define AMTECH_SMS_REPLY_MAX 256
-#define AMTECH_CAMERA_MONITORING_ACTIVE_SMS "Camera monitoring fully active"
+#define AMTECH_CAMERA_MONITORING_ACTIVE_SMS "System ARMED"
 
 typedef enum
 {
@@ -1181,7 +1181,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         }
 
         runtime_set_manual_armed(1, config);
-        modem_send_sms(sms->sender, "System ARMED");
+        modem_send_sms(sms->sender, "System ARMING...");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
         return 1;
     }
@@ -1447,7 +1447,7 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         }
 
         runtime_set_manual_armed(1, config);
-        modem_send_sms(sms->sender, "System ARMED");
+        modem_send_sms(sms->sender, "System ARMING...");
         printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
         return 1;
     }

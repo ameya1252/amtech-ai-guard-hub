@@ -285,7 +285,7 @@ static void check_sms_remote_control(void)
     check_int("contact 1 ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("contact 1 ARM sets armed", alarm_logic_is_armed(), 1);
     check_int("contact 1 ARM sends confirmation SMS", modem_get_simulated_sms_count(), 1);
-    check_string("contact 1 ARM reply text", modem_get_simulated_last_sms_message(), "System ARMED");
+    check_string("contact 1 ARM reply text", modem_get_simulated_last_sms_message(), "System ARMING...");
     check_int("contact 1 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 1);
 
     modem_simulate_incoming_sms("911111111111", "arm");
@@ -420,7 +420,7 @@ static void check_sms_manual_override_blocks_schedule_until_boundary(void)
     modem_simulate_incoming_sms("+911111111111", "ARM");
     check_int("manual override ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("manual override ARM sets armed", alarm_logic_is_armed(), 1);
-    check_string("manual override immediate ARM reply", modem_get_simulated_last_sms_message(), "System ARMED");
+    check_string("manual override immediate ARM reply", modem_get_simulated_last_sms_message(), "System ARMING...");
 
     runtime_test_apply_schedule_armed(0);
     check_int("schedule cannot immediately disarm SMS manual ARM", alarm_logic_is_armed(), 1);
@@ -479,7 +479,7 @@ static void check_camera_monitoring_active_sms(void)
     check_string("SMS ARM completion contact 3", modem_get_simulated_sms_number_at(3), "+913333333333");
     check_string("SMS ARM completion message",
                  modem_get_simulated_last_sms_message(),
-                 "Camera monitoring fully active");
+                 "System ARMED");
 
     gpio_reset_simulated_values();
     modem_reset_simulated_state();
@@ -512,7 +512,7 @@ static void check_camera_monitoring_active_sms(void)
     check_string("schedule completion contact 3", modem_get_simulated_sms_number_at(2), "+913333333333");
     check_string("schedule completion message",
                  modem_get_simulated_last_sms_message(),
-                 "Camera monitoring fully active");
+                 "System ARMED");
 }
 
 int main(void)

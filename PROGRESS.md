@@ -367,7 +367,7 @@ Behavior:
 - The runtime polls unread SMS periodically using `AT+CMGL="REC UNREAD"`.
 - Only `ALERT_CONTACT_1`, `ALERT_CONTACT_2`, and `ALERT_CONTACT_3` are authorized senders.
 - Valid commands are case-insensitive `ARM`, `DISARM`, and `STOP`.
-- `ARM` calls the same `alarm_logic_set_armed(1)` path used elsewhere and replies with `System ARMED`, or `System already ARMED` if no state change is needed.
+- `ARM` calls the same `alarm_logic_set_armed(1)` path used elsewhere and replies with `System ARMING...`, or `System already ARMED` if no state change is needed. After camera calibration completes, the hub sends `System ARMED`.
 - `DISARM` calls the same `alarm_logic_set_armed(0)` path used elsewhere and replies with `System DISARMED`, or `System already DISARMED` if no state change is needed.
 - `STOP` calls `alarm_logic_reset()`, disarms the system, and replies with `Alarm stopped, system DISARMED`; if no alarm is active it replies with `No active alarm`.
 - Unknown senders and unrecognized message text are ignored without a reply.
