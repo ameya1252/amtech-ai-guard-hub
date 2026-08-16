@@ -272,15 +272,15 @@ static void check_sms_remote_control(void)
     check_string("contact 1 ARM reply text", modem_get_simulated_last_sms_message(), "System ARMED");
     check_int("contact 1 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 1);
 
-    modem_simulate_incoming_sms("+911111111111", "arm");
-    check_int("redundant ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    modem_simulate_incoming_sms("911111111111", "arm");
+    check_int("redundant ARM SMS accepted from 91-prefixed sender", runtime_poll_sms_remote_control(&config), 1);
     check_int("redundant ARM leaves armed", alarm_logic_is_armed(), 1);
     check_int("redundant ARM sends confirmation SMS", modem_get_simulated_sms_count(), 2);
     check_string("redundant ARM reply text", modem_get_simulated_last_sms_message(), "System already ARMED");
     check_int("redundant ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 2);
 
-    modem_simulate_incoming_sms("+912222222222", "  disarm \r\n");
-    check_int("contact 2 DISARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
+    modem_simulate_incoming_sms("2222222222", "  disarm \r\n");
+    check_int("contact 2 DISARM SMS accepted from 10-digit sender", runtime_poll_sms_remote_control(&config), 1);
     check_int("contact 2 DISARM clears armed", alarm_logic_is_armed(), 0);
     check_int("contact 2 DISARM sends confirmation SMS", modem_get_simulated_sms_count(), 3);
     check_string("contact 2 DISARM reply text", modem_get_simulated_last_sms_message(), "System DISARMED");
@@ -315,8 +315,8 @@ static void check_sms_remote_control(void)
     check_string("STOP reply text", modem_get_simulated_last_sms_message(), "Alarm stopped, system DISARMED");
     check_int("STOP SMS deleted", modem_get_simulated_deleted_sms_count(), 6);
 
-    modem_simulate_incoming_sms("+911111111111", "STOP");
-    check_int("STOP SMS accepted with no active alarm", runtime_poll_sms_remote_control(&config), 1);
+    modem_simulate_incoming_sms("1111111111", "STOP");
+    check_int("STOP SMS accepted with no active alarm from 10-digit sender", runtime_poll_sms_remote_control(&config), 1);
     check_int("STOP no-active leaves triggered clear", alarm_logic_is_triggered(), 0);
     check_int("STOP no-active sends feedback SMS", modem_get_simulated_sms_count(), sms_count_after_trigger + 2);
     check_string("STOP no-active reply text", modem_get_simulated_last_sms_message(), "No active alarm");

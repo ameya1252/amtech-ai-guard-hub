@@ -381,7 +381,7 @@ static int parse_cmgl_response(const char *response, modem_incoming_sms_t *sms)
     line = strstr(response, "+CMGL:");
     if (line == NULL)
     {
-        return 1;
+        return 0;
     }
 
     if (sscanf(line, "+CMGL: %d", &index) != 1)
@@ -430,7 +430,7 @@ static int parse_cmgl_response(const char *response, modem_incoming_sms_t *sms)
     memcpy(sms->text, text_start, text_length);
     sms->text[text_length] = '\0';
     trim_sms_text(sms->text);
-    return 0;
+    return 1;
 }
 
 int modem_sms_receive_init(void)
@@ -519,6 +519,10 @@ int modem_check_incoming_sms(modem_incoming_sms_t *sms)
         else
         {
             result = parse_cmgl_response(response, sms);
+            if (result == 1)
+            {
+                printf("Modem HAL: received SMS index=%d from %s\n", sms->index, sms->sender);
+            }
         }
     }
 #endif

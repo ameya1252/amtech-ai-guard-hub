@@ -444,18 +444,76 @@ static void uppercase_runtime_text(char *text)
     }
 }
 
+static void normalize_phone_number(const char *input, char *output, size_t output_size)
+{
+    char digits[MODEM_SMS_SENDER_MAX];
+    size_t digit_count = 0;
+    size_t start = 0;
+    size_t copy_length;
+    size_t i;
+
+    if (output == NULL || output_size == 0)
+    {
+        return;
+    }
+    output[0] = '\0';
+
+    if (input == NULL)
+    {
+        return;
+    }
+
+    for (i = 0; input[i] != '\0' && digit_count < sizeof(digits) - 1; i++)
+    {
+        if (isdigit((unsigned char)input[i]))
+        {
+            digits[digit_count++] = input[i];
+        }
+    }
+    digits[digit_count] = '\0';
+
+    if (digit_count >= 2 && digits[0] == '0' && digits[1] == '0')
+    {
+        start = 2;
+    }
+
+    if (digit_count - start > 10)
+    {
+        start = digit_count - 10;
+    }
+
+    copy_length = digit_count - start;
+    if (copy_length >= output_size)
+    {
+        copy_length = output_size - 1;
+    }
+
+    memcpy(output, digits + start, copy_length);
+    output[copy_length] = '\0';
+}
+
 static int sms_sender_is_authorized(const amtech_config_t *config, const char *sender)
 {
     int i;
+    char normalized_sender[MODEM_SMS_SENDER_MAX];
+    char normalized_contact[MODEM_SMS_SENDER_MAX];
 
     if (config == NULL || sender == NULL)
     {
         return 0;
     }
 
+    normalize_phone_number(sender, normalized_sender, sizeof(normalized_sender));
+    if (normalized_sender[0] == '\0')
+    {
+        return 0;
+    }
+
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
     {
-        if (strcmp(sender, config->alert_contacts[i]) == 0)
+        normalize_phone_number(config->alert_contacts[i], normalized_contact, sizeof(normalized_contact));
+        if (normalized_contact[0] != '\0' &&
+            strcmp(normalized_sender, normalized_contact) == 0)
         {
             return 1;
         }
@@ -630,18 +688,76 @@ static void uppercase_runtime_text(char *text)
     }
 }
 
+static void normalize_phone_number(const char *input, char *output, size_t output_size)
+{
+    char digits[MODEM_SMS_SENDER_MAX];
+    size_t digit_count = 0;
+    size_t start = 0;
+    size_t copy_length;
+    size_t i;
+
+    if (output == NULL || output_size == 0)
+    {
+        return;
+    }
+    output[0] = '\0';
+
+    if (input == NULL)
+    {
+        return;
+    }
+
+    for (i = 0; input[i] != '\0' && digit_count < sizeof(digits) - 1; i++)
+    {
+        if (isdigit((unsigned char)input[i]))
+        {
+            digits[digit_count++] = input[i];
+        }
+    }
+    digits[digit_count] = '\0';
+
+    if (digit_count >= 2 && digits[0] == '0' && digits[1] == '0')
+    {
+        start = 2;
+    }
+
+    if (digit_count - start > 10)
+    {
+        start = digit_count - 10;
+    }
+
+    copy_length = digit_count - start;
+    if (copy_length >= output_size)
+    {
+        copy_length = output_size - 1;
+    }
+
+    memcpy(output, digits + start, copy_length);
+    output[copy_length] = '\0';
+}
+
 static int sms_sender_is_authorized(const amtech_config_t *config, const char *sender)
 {
     int i;
+    char normalized_sender[MODEM_SMS_SENDER_MAX];
+    char normalized_contact[MODEM_SMS_SENDER_MAX];
 
     if (config == NULL || sender == NULL)
     {
         return 0;
     }
 
+    normalize_phone_number(sender, normalized_sender, sizeof(normalized_sender));
+    if (normalized_sender[0] == '\0')
+    {
+        return 0;
+    }
+
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
     {
-        if (strcmp(sender, config->alert_contacts[i]) == 0)
+        normalize_phone_number(config->alert_contacts[i], normalized_contact, sizeof(normalized_contact));
+        if (normalized_contact[0] != '\0' &&
+            strcmp(normalized_sender, normalized_contact) == 0)
         {
             return 1;
         }
