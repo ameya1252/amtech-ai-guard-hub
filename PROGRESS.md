@@ -147,7 +147,7 @@ The alarm supports:
 Person detection:
 
 - Person class is class ID `0` or class name `"person"`.
-- Confidence must be greater than `0.6`.
+- Confidence must be greater than `0.25`, based on the 54-image ground-truth threshold sweep.
 - A person must appear for `2` consecutive camera frames before the alarm triggers.
 - Person detection does not trigger while DISARMED.
 
@@ -177,7 +177,7 @@ The implementation uses the subprocess approach proven by the standalone RTSP te
 - Capture one frame with `ffmpeg`.
 - Use RTSP over TCP.
 - Use reduced probe settings: `-analyzeduration 1000000 -probesize 32768`.
-- Scale before writing the JPEG: `-vf scale=640:640`.
+- Scale before writing the JPEG using aspect-ratio-preserving letterbox: `-vf scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2`.
 - Save to `/tmp/amtech_live_frame.jpg`.
 - Run Rockchip's `rknn_yolov5_demo` against that frame.
 - Parse `person @ ... confidence` lines from the demo output.

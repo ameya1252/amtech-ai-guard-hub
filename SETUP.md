@@ -178,7 +178,7 @@ ffmpeg RTSP capture -> /tmp/amtech_live_frame.jpg -> rknn_yolov5_demo -> parse p
 The ffmpeg profile is:
 
 ```text
--rtsp_transport tcp -analyzeduration 1000000 -probesize 32768 -vf scale=640:640
+-rtsp_transport tcp -analyzeduration 1000000 -probesize 32768 -vf "scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2"
 ```
 
 Expected board paths:

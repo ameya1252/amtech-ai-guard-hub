@@ -140,7 +140,7 @@ static int capture_frame(const char *rtsp_url)
         "-frames:v",
         "1",
         "-vf",
-        "scale=640:640",
+        "scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2",
         "-q:v",
         "2",
         AMTECH_CAMERA_FRAME_PATH,
