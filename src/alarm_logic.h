@@ -19,6 +19,10 @@ int alarm_logic_is_triggered(void);
 void alarm_logic_reset(void);
 void alarm_logic_tick(unsigned int elapsed_ms);
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence);
+void alarm_logic_handle_detection_source(int class_id,
+                                         const char *class_name,
+                                         float confidence,
+                                         const char *event_type);
 void alarm_logic_handle_shutter_sensor(int triggered);
 void alarm_logic_handle_shutter_dual(shutter_state_t state);
 void alarm_logic_handle_shutter_dual_named(shutter_state_t state,
@@ -27,6 +31,7 @@ void alarm_logic_handle_shutter_dual_named(shutter_state_t state,
 void alarm_logic_handle_panic(int triggered);
 void alarm_logic_handle_smoke(int triggered);
 void alarm_logic_end_frame(void);
+void alarm_logic_end_frame_source(const char *event_type);
 void trigger_alarm(void);
 
 #ifdef __cplusplus

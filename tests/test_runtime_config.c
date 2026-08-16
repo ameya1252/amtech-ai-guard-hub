@@ -99,6 +99,17 @@ static void check_pin_edge(runtime_watched_pin_t pins[],
     check_int(label, matches, 1);
 }
 
+static void check_camera_config(const runtime_camera_config_t *camera,
+                                const char *expected_source,
+                                const char *expected_event_type,
+                                const char *expected_url)
+{
+    check_int("camera config enabled", camera->enabled, 1);
+    check_string("camera config source", camera->source, expected_source);
+    check_string("camera config event type", camera->event_type, expected_event_type);
+    check_string("camera config RTSP URL", camera->rtsp_url, expected_url);
+}
+
 static void check_shutter2_ignored_when_single_shutter(void)
 {
     amtech_config_t config;
@@ -259,7 +270,10 @@ int main(void)
     check_string("missing config default alert contact 3",
                  config.alert_contacts[2],
                  AMTECH_DEFAULT_ALERT_CONTACT_3);
+    check_int("missing config default camera disabled", config.camera_enabled, 0);
     check_string("missing config default camera URL", config.camera_rtsp_url, "");
+    check_int("missing config default camera2 disabled", config.camera2_enabled, 0);
+    check_string("missing config default camera2 URL", config.camera2_rtsp_url, "");
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -267,7 +281,7 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
@@ -281,6 +295,50 @@ int main(void)
     check_string("configured camera RTSP URL",
                  config.camera_rtsp_url,
                  "rtsp://user:pass@192.168.0.2:554/stream1");
+    check_int("configured camera enabled", config.camera_enabled, 1);
+    check_int("configured camera2 enabled", config.camera2_enabled, 1);
+    check_string("configured camera2 RTSP URL",
+                 config.camera2_rtsp_url,
+                 "rtsp://user:pass@192.168.0.4:554/stream1");
+
+    {
+        runtime_camera_config_t cameras[AMTECH_RUNTIME_MAX_CAMERAS];
+
+        count = runtime_build_camera_configs(&config, cameras, AMTECH_RUNTIME_MAX_CAMERAS);
+        check_int("both cameras configured count", count, 2);
+        check_camera_config(&cameras[0],
+                            "front",
+                            "intrusion-front",
+                            "rtsp://user:pass@192.168.0.2:554/stream1");
+        check_camera_config(&cameras[1],
+                            "parking",
+                            "intrusion-parking",
+                            "rtsp://user:pass@192.168.0.4:554/stream1");
+
+        config.camera_enabled = 0;
+        config.camera2_enabled = 1;
+        count = runtime_build_camera_configs(&config, cameras, AMTECH_RUNTIME_MAX_CAMERAS);
+        check_int("camera1 disabled camera2 enabled count", count, 1);
+        check_camera_config(&cameras[0],
+                            "parking",
+                            "intrusion-parking",
+                            "rtsp://user:pass@192.168.0.4:554/stream1");
+
+        config.camera_enabled = 1;
+        config.camera2_enabled = 0;
+        count = runtime_build_camera_configs(&config, cameras, AMTECH_RUNTIME_MAX_CAMERAS);
+        check_int("camera1 enabled camera2 disabled count", count, 1);
+        check_camera_config(&cameras[0],
+                            "front",
+                            "intrusion-front",
+                            "rtsp://user:pass@192.168.0.2:554/stream1");
+
+        config.camera_enabled = 1;
+        config.camera_rtsp_url[0] = '\0';
+        config.camera2_enabled = 0;
+        count = runtime_build_camera_configs(&config, cameras, AMTECH_RUNTIME_MAX_CAMERAS);
+        check_int("enabled camera with empty URL does not start", count, 0);
+    }
 
     amtech_config_set_defaults(&config);
     count = runtime_build_watched_pins(&config, pins, AMTECH_RUNTIME_MAX_WATCHED_PINS);

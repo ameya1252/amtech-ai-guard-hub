@@ -178,10 +178,10 @@ The implementation uses the subprocess approach proven by the standalone RTSP an
 - Use RTSP over TCP.
 - Use reduced probe settings: `-analyzeduration 1000000 -probesize 32768`.
 - Scale to 480x480 with aspect-ratio-preserving letterbox: `-vf scale=480:480:force_original_aspect_ratio=decrease,pad=480:480:(ow-iw)/2:(oh-ih)/2`.
-- Save the captured frame as RGB PPM at `/tmp/amtech_live_frame.ppm`.
+- Save the captured frame as a per-camera RGB PPM under `/tmp`.
 - Run luminance-only CLAHE preprocessing with `/root/amtech_clahe_ppm`.
-- Save the enhanced frame as `/tmp/amtech_live_frame_clahe.ppm`.
-- Encode the enhanced frame to `/tmp/amtech_live_frame.jpg`.
+- Save the enhanced frame as a per-camera CLAHE PPM under `/tmp`.
+- Encode the enhanced frame to a per-camera JPEG under `/tmp`.
 - Run Rockchip's `rknn_yolov5_demo` against that frame.
 - Parse `person @ ... confidence` lines from the demo output.
 
@@ -224,13 +224,24 @@ Real paths used by the camera module:
 /root/rknn_yolov5_demo_export/rknn_yolov5_demo
 /root/rknn_yolov5_demo_export/model/yolov5.rknn
 /root/amtech_clahe_ppm
-/tmp/amtech_live_frame.ppm
-/tmp/amtech_live_frame_clahe.ppm
-/tmp/amtech_live_frame.jpg
-/tmp/amtech_camera_detection_output.txt
+/tmp/amtech_front_live_frame.ppm
+/tmp/amtech_front_live_frame_clahe.ppm
+/tmp/amtech_front_live_frame.jpg
+/tmp/amtech_front_camera_detection_output.txt
+/tmp/amtech_parking_live_frame.ppm
+/tmp/amtech_parking_live_frame_clahe.ppm
+/tmp/amtech_parking_live_frame.jpg
+/tmp/amtech_parking_camera_detection_output.txt
 ```
 
-The runtime starts camera detection in a separate pthread when `CAMERA_RTSP_URL` is configured. The camera thread never calls `alarm_logic_*` directly. It only publishes a detection result into a mutex-protected slot. The main runtime thread consumes that result and calls `alarm_logic_handle_detection()` and `alarm_logic_end_frame()`, keeping alarm state mutations single-threaded.
+The runtime supports two independently configured camera workers:
+
+- Front camera: `CAMERA_ENABLED=1` and `CAMERA_RTSP_URL=...`
+- Parking camera: `CAMERA2_ENABLED=1` and `CAMERA2_RTSP_URL=...`
+
+Each enabled camera has its own pthread and its own temporary frame/output files. Capture and preprocessing can run in parallel, but the RKNN demo/NPU subprocess is protected by one shared inference mutex so only one camera uses the NPU at a time.
+
+Camera threads never call `alarm_logic_*` directly. They publish source-tagged results (`intrusion-front` or `intrusion-parking`) into a mutex-protected FIFO queue. The main runtime thread consumes those results and calls the source-aware alarm detection handlers, keeping alarm state mutations single-threaded.
 
 Timeouts:
 

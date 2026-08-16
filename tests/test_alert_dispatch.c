@@ -257,6 +257,10 @@ int main(void)
                   "AMTECH ALERT: Shutter 2 intrusion detected at your shop.");
     check_message("intrusion",
                   "AMTECH ALERT: Person detected inside your shop while armed.");
+    check_message("intrusion-front",
+                  "AMTECH ALERT: Person detected on the front camera while armed.");
+    check_message("intrusion-parking",
+                  "AMTECH ALERT: Person detected on the parking camera while armed.");
     check_message("smoke",
                   "AMTECH ALERT: Smoke detected at your shop. Possible fire emergency.");
 

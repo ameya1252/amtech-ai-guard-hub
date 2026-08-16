@@ -62,6 +62,16 @@ const char *alert_dispatch_message_for_event(const char *event_type)
         return "AMTECH ALERT: Person detected inside your shop while armed.";
     }
 
+    if (strcmp(event_type, "intrusion-front") == 0)
+    {
+        return "AMTECH ALERT: Person detected on the front camera while armed.";
+    }
+
+    if (strcmp(event_type, "intrusion-parking") == 0)
+    {
+        return "AMTECH ALERT: Person detected on the parking camera while armed.";
+    }
+
     if (strcmp(event_type, "smoke") == 0)
     {
         return "AMTECH ALERT: Smoke detected at your shop. Possible fire emergency.";

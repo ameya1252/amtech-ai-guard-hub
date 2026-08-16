@@ -137,12 +137,17 @@ MODEM_DEVICE=/dev/ttyS5
 ALERT_CONTACT_1=+918550991121
 ALERT_CONTACT_2=+919922434811
 ALERT_CONTACT_3=+919922435710
+CAMERA_ENABLED=1
 CAMERA_RTSP_URL=rtsp://user:pass@camera-ip:554/stream1
+CAMERA2_ENABLED=0
+CAMERA2_RTSP_URL=
 ```
 
 Notes:
 
-- Leave `CAMERA_RTSP_URL` empty or omit it to disable camera detection.
+- `CAMERA_ENABLED=1` plus a non-empty `CAMERA_RTSP_URL` enables the front camera.
+- `CAMERA2_ENABLED=1` plus a non-empty `CAMERA2_RTSP_URL` enables the parking camera.
+- Leave each camera's enabled key at `0` to keep that camera fully disabled.
 - `SHUTTER_COUNT=1` means Shutter-2 GPIO pins are not exported or watched.
 - `SMOKE_ENABLED=0` is the default so unwired smoke pins cannot false-trigger.
 - `MODEM_DEVICE` defaults to `/dev/ttyS5` but is configurable until the final PCB UART mapping is locked.
@@ -164,9 +169,8 @@ ALERT_CONTACT_3=+91...
 
 Current firmware support status:
 
-- `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
-- `CAMERA_ENABLED` is not a separate parsed key yet; today, Camera 1 is enabled by setting non-empty `CAMERA_RTSP_URL` and disabled by leaving it empty.
-- `CAMERA2_ENABLED` and `CAMERA2_RTSP_URL` are planned keys for the future second-camera path. They are documented here so the app/backend config screen can use stable names later, but current firmware ignores them until Camera 2 support is implemented.
+- `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_ENABLED`, `CAMERA_RTSP_URL`, `CAMERA2_ENABLED`, `CAMERA2_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
+- The app/backend should treat `CAMERA_ENABLED` and `CAMERA2_ENABLED` as the actual toggles. A URL alone is not enough to start a camera.
 
 ## Runtime Loop Build
 
@@ -188,13 +192,15 @@ For local simulation tests, use the relevant simulation flags:
 
 ## Camera Detection
 
-Runtime camera detection is enabled only when `CAMERA_RTSP_URL` is set.
+Runtime camera detection is enabled per camera only when both its enabled key and RTSP URL are set.
 
 The current implementation uses the proven subprocess pipeline:
 
 ```text
 ffmpeg RTSP capture -> RGB PPM -> CLAHE -> enhanced PPM -> JPEG -> rknn_yolov5_demo -> parse person detections
 ```
+
+Front and parking cameras run in separate capture threads. Each thread uses its own `/tmp` frame/output paths, so the two cameras cannot overwrite each other's intermediate files. The RKNN demo/NPU step is serialized with a shared pthread mutex because the RV1106 has one shared NPU.
 
 The ffmpeg profile is:
 

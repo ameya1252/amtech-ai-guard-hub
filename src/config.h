@@ -29,7 +29,10 @@ typedef struct
      * Contacts are ordered by call-escalation priority.
      */
     char alert_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
+    int camera_enabled;
     char camera_rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
+    int camera2_enabled;
+    char camera2_rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
 } amtech_config_t;
 
 void amtech_config_set_defaults(amtech_config_t *config);

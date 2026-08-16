@@ -4,6 +4,7 @@
 #include "notify_client.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define TEST_SIREN_GPIO_PIN 42
 #define TEST_STROBE_GPIO_PIN 48
@@ -271,6 +272,73 @@ static void check_person_retrigger(void)
 #endif
 }
 
+static void check_camera_sources_confirm_independently(void)
+{
+#ifdef SIMULATE_GPIO
+    gpio_reset_simulated_values();
+#endif
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(1);
+
+    alarm_logic_handle_detection_source(0, "person", 0.80f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    alarm_logic_handle_detection_source(0, "person", 0.81f, "intrusion-parking");
+    alarm_logic_end_frame_source("intrusion-parking");
+    check_int("one front frame plus one parking frame does not cross-confirm",
+              alarm_logic_is_triggered(),
+              0);
+#ifdef SIMULATE_GPIO
+    check_int("cross-camera single frames keep siren OFF/HIGH",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              1);
+#endif
+
+    alarm_logic_handle_detection_source(0, "person", 0.82f, "intrusion-front");
+    alarm_logic_end_frame_source("intrusion-front");
+    check_int("second front frame triggers front intrusion",
+              alarm_logic_is_triggered(),
+              1);
+#ifdef SIMULATE_MODEM
+    check_int("front camera source sends SMS fan-out",
+              modem_get_simulated_sms_count(),
+              3);
+    check_int("front camera source message selected",
+              strcmp(modem_get_simulated_last_sms_message(),
+                     "AMTECH ALERT: Person detected on the front camera while armed.") == 0,
+              1);
+#endif
+
+    alarm_logic_reset();
+#ifdef SIMULATE_NETWORK
+    notify_reset_simulated_send_count();
+#endif
+#ifdef SIMULATE_MODEM
+    modem_reset_simulated_state();
+#endif
+
+    alarm_logic_set_armed(1);
+    alarm_logic_handle_detection_source(0, "person", 0.83f, "intrusion-parking");
+    alarm_logic_end_frame_source("intrusion-parking");
+    alarm_logic_handle_detection_source(0, "person", 0.84f, "intrusion-parking");
+    alarm_logic_end_frame_source("intrusion-parking");
+    check_int("two parking frames trigger parking intrusion",
+              alarm_logic_is_triggered(),
+              1);
+#ifdef SIMULATE_MODEM
+    check_int("parking camera source message selected",
+              strcmp(modem_get_simulated_last_sms_message(),
+                     "AMTECH ALERT: Person detected on the parking camera while armed.") == 0,
+              1);
+#endif
+}
+
 static void check_smoke_triggers_regardless_of_armed_state(void)
 {
 #ifdef SIMULATE_GPIO
@@ -476,6 +544,7 @@ int main(void)
     check_outputs_reactivate_when_notification_is_suppressed();
     check_shutter_retrigger();
     check_person_retrigger();
+    check_camera_sources_confirm_independently();
     check_call_state_ticks_without_blocking_alarm_flow();
 
     if (failures == 0)

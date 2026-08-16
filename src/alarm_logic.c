@@ -12,6 +12,16 @@
 #define REQUIRED_CONSECUTIVE_FRAMES 2
 #define SHOP_ID_MAX_SIZE 64
 #define AMTECH_STROBE_GPIO_PIN 48
+#define AMTECH_DETECTION_SOURCE_MAX 4
+#define AMTECH_DETECTION_EVENT_TYPE_MAX 32
+
+typedef struct
+{
+    int used;
+    char event_type[AMTECH_DETECTION_EVENT_TYPE_MAX];
+    int consecutive_person_frames;
+    int person_seen_this_frame;
+} detection_source_state_t;
 
 static int alarm_gpio_pin = -1;
 static int strobe_gpio_pin = AMTECH_STROBE_GPIO_PIN;
@@ -20,11 +30,66 @@ static unsigned int siren_elapsed_ms = 0;
 static int notification_sent_this_incident = 0;
 static unsigned int notification_elapsed_ms = 0;
 static int armed = 0;
-static int consecutive_person_frames = 0;
-static int person_seen_this_frame = 0;
 static int alarm_triggered = 0;
 static char alarm_shop_id[SHOP_ID_MAX_SIZE] = "amtech-demo-shop";
 static const char *pending_alarm_event_type = "intrusion";
+static detection_source_state_t detection_sources[AMTECH_DETECTION_SOURCE_MAX];
+
+static void reset_detection_sources(void)
+{
+    memset(detection_sources, 0, sizeof(detection_sources));
+}
+
+static detection_source_state_t *get_detection_source(const char *event_type)
+{
+    int i;
+    int first_free = -1;
+
+    if (event_type == NULL || event_type[0] == '\0')
+    {
+        event_type = "intrusion";
+    }
+
+    for (i = 0; i < AMTECH_DETECTION_SOURCE_MAX; i++)
+    {
+        if (detection_sources[i].used &&
+            strcmp(detection_sources[i].event_type, event_type) == 0)
+        {
+            return &detection_sources[i];
+        }
+
+        if (!detection_sources[i].used && first_free < 0)
+        {
+            first_free = i;
+        }
+    }
+
+    if (first_free < 0)
+    {
+        printf("Alarm: no free detection source slot for %s\n", event_type);
+        return NULL;
+    }
+
+    detection_sources[first_free].used = 1;
+    snprintf(detection_sources[first_free].event_type,
+             sizeof(detection_sources[first_free].event_type),
+             "%s",
+             event_type);
+    detection_sources[first_free].consecutive_person_frames = 0;
+    detection_sources[first_free].person_seen_this_frame = 0;
+    return &detection_sources[first_free];
+}
+
+static void clear_detection_frame_flags(void)
+{
+    int i;
+
+    for (i = 0; i < AMTECH_DETECTION_SOURCE_MAX; i++)
+    {
+        detection_sources[i].person_seen_this_frame = 0;
+        detection_sources[i].consecutive_person_frames = 0;
+    }
+}
 
 static int init_alarm_output_off(int gpio_pin, const char *name)
 {
@@ -67,9 +132,8 @@ void alarm_logic_init(int gpio_pin)
     notification_sent_this_incident = 0;
     notification_elapsed_ms = 0;
     armed = 0;
-    consecutive_person_frames = 0;
-    person_seen_this_frame = 0;
     alarm_triggered = 0;
+    reset_detection_sources();
     alert_dispatch_reset();
 
     if (init_alarm_output_off(alarm_gpio_pin, "siren") != 0)
@@ -98,8 +162,7 @@ void alarm_logic_set_shop_id(const char *shop_id)
 void alarm_logic_set_armed(int next_armed)
 {
     armed = next_armed ? 1 : 0;
-    consecutive_person_frames = 0;
-    person_seen_this_frame = 0;
+    clear_detection_frame_flags();
 
     printf("Alarm: system %s\n", armed ? "ARMED" : "DISARMED");
 }
@@ -150,8 +213,7 @@ void alarm_logic_reset(void)
     siren_elapsed_ms = 0;
     notification_sent_this_incident = 0;
     notification_elapsed_ms = 0;
-    consecutive_person_frames = 0;
-    person_seen_this_frame = 0;
+    reset_detection_sources();
     pending_alarm_event_type = "intrusion";
 
     if (alarm_gpio_pin >= 0)
@@ -216,7 +278,16 @@ void alarm_logic_tick(unsigned int elapsed_ms)
 
 void alarm_logic_handle_detection(int class_id, const char *class_name, float confidence)
 {
+    alarm_logic_handle_detection_source(class_id, class_name, confidence, "intrusion");
+}
+
+void alarm_logic_handle_detection_source(int class_id,
+                                         const char *class_name,
+                                         float confidence,
+                                         const char *event_type)
+{
     int is_person = 0;
+    detection_source_state_t *source;
 
     if (class_id == PERSON_CLASS_ID)
     {
@@ -232,15 +303,23 @@ void alarm_logic_handle_detection(int class_id, const char *class_name, float co
         return;
     }
 
-    printf("Alarm: person detected confidence=%.3f state=%s\n",
-           confidence, armed ? "ARMED" : "DISARMED");
+    printf("Alarm: person detected source=%s confidence=%.3f state=%s\n",
+           event_type != NULL && event_type[0] != '\0' ? event_type : "intrusion",
+           confidence,
+           armed ? "ARMED" : "DISARMED");
 
     if (!armed)
     {
         return;
     }
 
-    person_seen_this_frame = 1;
+    source = get_detection_source(event_type);
+    if (source == NULL)
+    {
+        return;
+    }
+
+    source->person_seen_this_frame = 1;
 }
 
 void alarm_logic_handle_shutter_sensor(int triggered)
@@ -323,29 +402,44 @@ void alarm_logic_handle_smoke(int triggered)
 
 void alarm_logic_end_frame(void)
 {
-    if (!armed)
+    alarm_logic_end_frame_source("intrusion");
+}
+
+void alarm_logic_end_frame_source(const char *event_type)
+{
+    detection_source_state_t *source;
+
+    source = get_detection_source(event_type);
+    if (source == NULL)
     {
-        person_seen_this_frame = 0;
-        consecutive_person_frames = 0;
         return;
     }
 
-    if (person_seen_this_frame)
+    if (!armed)
     {
-        consecutive_person_frames++;
+        source->person_seen_this_frame = 0;
+        source->consecutive_person_frames = 0;
+        return;
+    }
+
+    if (source->person_seen_this_frame)
+    {
+        source->consecutive_person_frames++;
     }
     else
     {
-        consecutive_person_frames = 0;
+        source->consecutive_person_frames = 0;
     }
 
-    printf("Alarm: consecutive person frames=%d\n", consecutive_person_frames);
+    printf("Alarm: %s consecutive person frames=%d\n",
+           source->event_type,
+           source->consecutive_person_frames);
 
-    if (consecutive_person_frames >= REQUIRED_CONSECUTIVE_FRAMES)
+    if (source->consecutive_person_frames >= REQUIRED_CONSECUTIVE_FRAMES)
     {
-        pending_alarm_event_type = "intrusion";
+        pending_alarm_event_type = source->event_type;
         trigger_alarm();
     }
 
-    person_seen_this_frame = 0;
+    source->person_seen_this_frame = 0;
 }
