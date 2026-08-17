@@ -8,7 +8,6 @@ extern "C" {
 #endif
 
 #define AMTECH_CONFIG_SYNC_POLL_MS 300000U
-#define AMTECH_SHOP_ID_MAX 128
 
 int amtech_config_sync_parse_json(const char *json, amtech_config_t *config);
 int amtech_config_sync_update_file(const char *path, const amtech_config_t *config);

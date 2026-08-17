@@ -18,11 +18,13 @@ extern "C" {
 #define AMTECH_DEFAULT_SCHEDULE_DISARM_HOUR 6
 #define AMTECH_DEFAULT_SCHEDULE_DISARM_MINUTE 0
 #define AMTECH_DEFAULT_BACKEND_BASE_URL "https://amtech-ai-guard-hub-production.up.railway.app"
+#define AMTECH_DEFAULT_SHOP_ID "amtech-demo-shop"
 #define AMTECH_MODEM_DEVICE_MAX 64
 #define AMTECH_ALERT_CONTACT_NUMBER_MAX 24
 #define AMTECH_CAMERA_RTSP_URL_MAX 256
 #define AMTECH_BACKEND_URL_MAX 256
 #define AMTECH_DEVICE_CONFIG_TOKEN_MAX 128
+#define AMTECH_SHOP_ID_MAX 128
 
 typedef struct
 {
@@ -46,6 +48,7 @@ typedef struct
     char camera2_rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
     char backend_base_url[AMTECH_BACKEND_URL_MAX];
     char device_config_token[AMTECH_DEVICE_CONFIG_TOKEN_MAX];
+    char shop_id[AMTECH_SHOP_ID_MAX];
 } amtech_config_t;
 
 void amtech_config_set_defaults(amtech_config_t *config);

@@ -708,6 +708,7 @@ int main(void)
     check_int("missing config default camera2 disabled", config.camera2_enabled, 0);
     check_string("missing config default camera2 URL", config.camera2_rtsp_url, "");
     check_string("missing config default backend base URL", config.backend_base_url, AMTECH_DEFAULT_BACKEND_BASE_URL);
+    check_string("missing config default shop id", config.shop_id, AMTECH_DEFAULT_SHOP_ID);
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -715,7 +716,7 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nSCHEDULE_ARM=22:15\nSCHEDULE_DISARM=05:45\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\nBACKEND_BASE_URL=https://example.test\nDEVICE_CONFIG_TOKEN=test-token\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nSCHEDULE_ARM=22:15\nSCHEDULE_DISARM=05:45\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\nBACKEND_BASE_URL=https://example.test\nDEVICE_CONFIG_TOKEN=test-token\nSHOP_ID=real-shop-123\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
@@ -740,6 +741,7 @@ int main(void)
                  "rtsp://user:pass@192.168.0.4:554/stream1");
     check_string("configured backend base URL", config.backend_base_url, "https://example.test");
     check_string("configured device config token", config.device_config_token, "test-token");
+    check_string("configured shop id", config.shop_id, "real-shop-123");
 
     {
         runtime_camera_config_t cameras[AMTECH_RUNTIME_MAX_CAMERAS];

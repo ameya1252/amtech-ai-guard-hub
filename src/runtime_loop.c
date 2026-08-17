@@ -32,7 +32,6 @@
 #define AMTECH_SHUTTER2_NO_GPIO_PIN 72
 #define AMTECH_PANIC_GPIO_PIN 32
 #define AMTECH_SMOKE_GPIO_PIN 54
-#define AMTECH_SHOP_ID "amtech-demo-shop"
 #define AMTECH_RUNTIME_TEST_ITERATIONS 10
 #define AMTECH_DEBOUNCE_CONFIRM_MS 200
 #define AMTECH_GPIO_POLL_TIMEOUT_MS 100
@@ -1460,7 +1459,7 @@ static void apply_device_command(runtime_device_command_context_t *context,
         return;
     }
 
-    if (amtech_device_command_ack(config, AMTECH_SHOP_ID, &command) != 0)
+    if (amtech_device_command_ack(config, config->shop_id, &command) != 0)
     {
         printf("Runtime: warning: failed to ack app command id=%s\n", command.id);
     }
@@ -2171,7 +2170,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
     if (start_device_command_thread(&device_command_context,
                                     &device_command_thread,
                                     config,
-                                    AMTECH_SHOP_ID) == 0)
+                                    config->shop_id) == 0)
     {
         device_command_thread_started = 1;
     }
@@ -2288,7 +2287,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
 
         if (last_config_sync_ms == 0 || now_ms - last_config_sync_ms >= AMTECH_CONFIG_SYNC_POLL_MS)
         {
-            if (amtech_config_sync_poll(runtime_config_path(), AMTECH_SHOP_ID, config) > 0)
+            if (amtech_config_sync_poll(runtime_config_path(), config->shop_id, config) > 0)
             {
                 runtime_apply_config_schedule(config);
             }
@@ -2488,7 +2487,7 @@ int main(int argc, char **argv)
     }
 
     alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
-    alarm_logic_set_shop_id(AMTECH_SHOP_ID);
+    alarm_logic_set_shop_id(config.shop_id);
     if (force_armed)
     {
         /*

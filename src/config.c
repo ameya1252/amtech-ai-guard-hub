@@ -120,6 +120,7 @@ void amtech_config_set_defaults(amtech_config_t *config)
     config->camera2_rtsp_url[0] = '\0';
     snprintf(config->backend_base_url, sizeof(config->backend_base_url), "%s", AMTECH_DEFAULT_BACKEND_BASE_URL);
     config->device_config_token[0] = '\0';
+    snprintf(config->shop_id, sizeof(config->shop_id), "%s", AMTECH_DEFAULT_SHOP_ID);
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -139,7 +140,7 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=0 CAMERA_RTSP_URL=(disabled) CAMERA2_ENABLED=0 CAMERA2_RTSP_URL=(disabled) BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=(unset)\n",
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=0 CAMERA_RTSP_URL=(disabled) CAMERA2_ENABLED=0 CAMERA2_RTSP_URL=(disabled) BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=(unset) SHOP_ID=%s\n",
                    path,
                    config->schedule_arm_hour,
                    config->schedule_arm_minute,
@@ -149,7 +150,8 @@ int amtech_config_load(const char *path, amtech_config_t *config)
                    config->alert_contacts[0],
                    config->alert_contacts[1],
                    config->alert_contacts[2],
-                   config->backend_base_url);
+                   config->backend_base_url,
+                   config->shop_id);
             return 0;
         }
 
@@ -309,6 +311,16 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
             snprintf(config->device_config_token, sizeof(config->device_config_token), "%s", value);
         }
+        else if (strcmp(key, "SHOP_ID") == 0)
+        {
+            if (value[0] == '\0' || strlen(value) >= sizeof(config->shop_id))
+            {
+                printf("Config: invalid SHOP_ID, keeping %s\n", config->shop_id);
+                continue;
+            }
+
+            snprintf(config->shop_id, sizeof(config->shop_id), "%s", value);
+        }
         else
         {
             printf("Config: ignoring unknown key %s\n", key);
@@ -324,7 +336,7 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=%d CAMERA_RTSP_URL=%s CAMERA2_ENABLED=%d CAMERA2_RTSP_URL=%s BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=%s\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=%d CAMERA_RTSP_URL=%s CAMERA2_ENABLED=%d CAMERA2_RTSP_URL=%s BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=%s SHOP_ID=%s\n",
            config->shutter_count,
            config->panic_enabled,
            config->smoke_enabled,
@@ -341,6 +353,7 @@ int amtech_config_load(const char *path, amtech_config_t *config)
            config->camera2_enabled,
            config->camera2_rtsp_url[0] != '\0' ? config->camera2_rtsp_url : "(disabled)",
            config->backend_base_url,
-           config->device_config_token[0] != '\0' ? "(set)" : "(unset)");
+           config->device_config_token[0] != '\0' ? "(set)" : "(unset)",
+           config->shop_id);
     return 0;
 }
