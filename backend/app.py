@@ -8,13 +8,14 @@ from uuid import uuid4
 import bcrypt
 import boto3
 import jwt
+import requests
 from flask import Flask, g, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from database import Alert, Camera, CameraInventory, Device, Shop, SessionLocal, User, init_db
+from database import Alert, Camera, CameraInventory, Device, PushToken, Shop, SessionLocal, User, init_db
 
 
 app = Flask(__name__)
@@ -22,6 +23,8 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "https://pub-9585184cf02549f0a6e3e31090670c37.r2.dev")
 UPLOAD_URL_EXPIRES_SECONDS = 900
 DATABASE_KEEPALIVE_INTERVAL_SECONDS = int(os.getenv("DATABASE_KEEPALIVE_INTERVAL_SECONDS", "240"))
+EXPO_PUSH_SEND_URL = "https://exp.host/--/api/v2/push/send"
+PUSH_ALERT_EVENT_TYPES = {"intrusion", "intrusion-front", "intrusion-parking"}
 
 
 def rate_limit_key():
@@ -224,6 +227,25 @@ def parse_alert(payload):
     }
 
 
+def parse_push_token(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    token = str(payload.get("expo_push_token", "")).strip()
+    platform = payload.get("platform")
+
+    if not token:
+        raise ValueError("expo_push_token is required")
+
+    if not (token.startswith("ExponentPushToken[") or token.startswith("ExpoPushToken[")):
+        raise ValueError("expo_push_token must be an Expo push token")
+
+    return {
+        "expo_push_token": token,
+        "platform": str(platform).strip()[:32] if platform else None,
+    }
+
+
 def parse_shop_registration(payload):
     if not isinstance(payload, dict):
         raise ValueError("request body must be a JSON object")
@@ -348,12 +370,92 @@ def record_alert(alert_payload):
         db.add(alert_row)
         db.commit()
         db.refresh(alert_row)
+        send_push_for_alert(db, alert_row)
         return alert_row
     except Exception:
         db.rollback()
         raise
     finally:
         db.close()
+
+
+def push_title_for_event(event_type):
+    if event_type == "intrusion-front":
+        return "Intrusion Detected - Cam 1"
+    if event_type == "intrusion-parking":
+        return "Intrusion Detected - Cam 2"
+    return "Intrusion Detected"
+
+
+def push_body_for_event(shop, event_type):
+    shop_name = shop.shop_name if shop else "your shop"
+    if event_type == "intrusion-front":
+        return f"Person detected by Cam 1 at {shop_name}."
+    if event_type == "intrusion-parking":
+        return f"Person detected by Cam 2 at {shop_name}."
+    return f"Person detected at {shop_name}."
+
+
+def send_expo_push_messages(messages):
+    if not messages:
+        return None
+
+    if env_bool("SIMULATE_PUSH", default=False):
+        print(f"SIMULATE_PUSH: would send Expo push messages: {messages}", flush=True)
+        return {"simulated": True, "count": len(messages)}
+
+    response = requests.post(
+        EXPO_PUSH_SEND_URL,
+        json=messages,
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            "Content-Type": "application/json",
+        },
+        timeout=10,
+    )
+    print(f"Expo push response: HTTP {response.status_code} {response.text}", flush=True)
+    response.raise_for_status()
+    return response.json()
+
+
+def send_push_for_alert(db, alert_row):
+    if alert_row.event_type not in PUSH_ALERT_EVENT_TYPES:
+        return
+
+    shop = db.get(Shop, alert_row.shop_id)
+    if shop is None or not shop.user_id:
+        print(f"Push skipped: alert shop {alert_row.shop_id} has no owner user", flush=True)
+        return
+
+    token_rows = (
+        db.query(PushToken)
+        .filter(PushToken.user_id == shop.user_id)
+        .all()
+    )
+    if not token_rows:
+        print(f"Push skipped: owner for shop {alert_row.shop_id} has no registered push tokens", flush=True)
+        return
+
+    messages = [
+        {
+            "to": token_row.expo_push_token,
+            "title": push_title_for_event(alert_row.event_type),
+            "body": push_body_for_event(shop, alert_row.event_type),
+            "sound": "default",
+            "data": {
+                "shop_id": alert_row.shop_id,
+                "alert_id": alert_row.id,
+                "event_type": alert_row.event_type,
+            },
+        }
+        for token_row in token_rows
+    ]
+
+    try:
+        send_expo_push_messages(messages)
+    except Exception as exc:
+        print(f"Warning: Expo push send failed for alert {alert_row.id}: {exc}", flush=True)
 
 
 def get_or_create_shop(db, shop_id):
@@ -487,6 +589,46 @@ def get_or_seed_camera_inventory(db, payload):
         return inventory
 
     return None
+
+
+@app.post("/me/push-token")
+@auth_required
+def register_push_token():
+    try:
+        payload = parse_push_token(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        token_row = (
+            db.query(PushToken)
+            .filter(PushToken.expo_push_token == payload["expo_push_token"])
+            .first()
+        )
+        if token_row is None:
+            token_row = PushToken(
+                id=str(uuid4()),
+                user_id=g.user_id,
+                expo_push_token=payload["expo_push_token"],
+                platform=payload["platform"],
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(token_row)
+        else:
+            token_row.user_id = g.user_id
+            token_row.platform = payload["platform"]
+            token_row.updated_at = now
+
+        db.commit()
+        return jsonify({"ok": True})
+    except IntegrityError:
+        db.rollback()
+        return jsonify({"ok": False, "error": "push token is already registered"}), 409
+    finally:
+        db.close()
 
 
 @app.post("/auth/signup")

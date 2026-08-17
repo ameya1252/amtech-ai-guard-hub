@@ -18,6 +18,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     shops = relationship("Shop", back_populates="user")
+    push_tokens = relationship("PushToken", back_populates="user")
 
 
 class Shop(Base):
@@ -92,6 +93,22 @@ class Alert(Base):
     whatsapp_sent = Column(Boolean, nullable=False, default=False)
 
     shop = relationship("Shop", back_populates="alerts")
+
+
+class PushToken(Base):
+    __tablename__ = "push_tokens"
+    __table_args__ = (
+        UniqueConstraint("expo_push_token", name="uq_push_tokens_expo_push_token"),
+    )
+
+    id = Column(String(128), primary_key=True)
+    user_id = Column(String(128), ForeignKey("users.id"), nullable=False, index=True)
+    expo_push_token = Column(String(255), nullable=False)
+    platform = Column(String(32), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", back_populates="push_tokens")
 
 
 def database_url():
