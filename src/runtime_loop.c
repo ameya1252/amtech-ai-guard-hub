@@ -2,6 +2,7 @@
 #include "camera_detection.h"
 #include "config.h"
 #include "config_sync.h"
+#include "device_command_sync.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
 #include "modem_state.h"
@@ -17,9 +18,7 @@
 
 #ifndef SIMULATE_GPIO
 #include <fcntl.h>
-#ifndef SIMULATE_CAMERA
 #include <pthread.h>
-#endif
 #include <poll.h>
 #include <time.h>
 #include <unistd.h>
@@ -103,6 +102,16 @@ typedef struct
 } runtime_camera_health_t;
 
 #ifndef SIMULATE_GPIO
+typedef struct
+{
+    pthread_mutex_t mutex;
+    int stop_requested;
+    int has_command;
+    amtech_device_command_t command;
+    amtech_config_t config;
+    char shop_id[AMTECH_DEVICE_COMMAND_SHOP_ID_MAX];
+} runtime_device_command_context_t;
+
 #ifndef SIMULATE_CAMERA
 typedef struct
 {
@@ -1034,6 +1043,18 @@ void runtime_test_apply_schedule_armed_with_config(int armed, const amtech_confi
     runtime_apply_schedule_armed(armed, config);
 }
 
+void runtime_test_apply_app_command(amtech_device_command_type_t command, const amtech_config_t *config)
+{
+    if (command == AMTECH_DEVICE_COMMAND_ARM)
+    {
+        runtime_set_manual_armed(1, config);
+    }
+    else if (command == AMTECH_DEVICE_COMMAND_DISARM)
+    {
+        runtime_set_manual_armed(0, config);
+    }
+}
+
 void runtime_test_tick(unsigned int elapsed_ms)
 {
     alarm_logic_tick(elapsed_ms);
@@ -1300,6 +1321,149 @@ static long long monotonic_ms(void)
     }
 
     return ((long long)now.tv_sec * 1000) + (now.tv_nsec / 1000000);
+}
+
+static void *device_command_thread_main(void *arg)
+{
+    runtime_device_command_context_t *context = (runtime_device_command_context_t *)arg;
+    long long last_poll_ms = 0;
+
+    while (1)
+    {
+        long long now_ms = monotonic_ms();
+        int should_stop;
+
+        pthread_mutex_lock(&context->mutex);
+        should_stop = context->stop_requested;
+        pthread_mutex_unlock(&context->mutex);
+        if (should_stop)
+        {
+            break;
+        }
+
+        if (last_poll_ms == 0 || now_ms - last_poll_ms >= AMTECH_DEVICE_COMMAND_POLL_MS)
+        {
+            amtech_device_command_t command;
+
+            if (amtech_device_command_fetch(&context->config, context->shop_id, &command) == 0 &&
+                command.type != AMTECH_DEVICE_COMMAND_NONE)
+            {
+                pthread_mutex_lock(&context->mutex);
+                if (!context->has_command ||
+                    strcmp(context->command.id, command.id) != 0)
+                {
+                    context->command = command;
+                    context->has_command = 1;
+                    printf("Runtime: received app pending command %s id=%s\n",
+                           command.type == AMTECH_DEVICE_COMMAND_ARM ? "arm" : "disarm",
+                           command.id);
+                }
+                pthread_mutex_unlock(&context->mutex);
+            }
+            last_poll_ms = now_ms;
+        }
+
+        usleep(200000);
+    }
+
+    return NULL;
+}
+
+static int start_device_command_thread(runtime_device_command_context_t *context,
+                                       pthread_t *thread,
+                                       const amtech_config_t *config,
+                                       const char *shop_id)
+{
+    if (context == NULL || thread == NULL || config == NULL || shop_id == NULL)
+    {
+        return -1;
+    }
+
+    memset(context, 0, sizeof(*context));
+    pthread_mutex_init(&context->mutex, NULL);
+    context->config = *config;
+    snprintf(context->shop_id, sizeof(context->shop_id), "%s", shop_id);
+
+    if (pthread_create(thread, NULL, device_command_thread_main, context) != 0)
+    {
+        pthread_mutex_destroy(&context->mutex);
+        printf("Runtime: failed to start app command polling thread\n");
+        return -1;
+    }
+
+    printf("Runtime: app command polling thread started interval=%u ms\n", AMTECH_DEVICE_COMMAND_POLL_MS);
+    return 0;
+}
+
+static void stop_device_command_thread(runtime_device_command_context_t *context,
+                                       pthread_t thread,
+                                       int started)
+{
+    if (context == NULL || !started)
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&context->mutex);
+    context->stop_requested = 1;
+    pthread_mutex_unlock(&context->mutex);
+    pthread_join(thread, NULL);
+    pthread_mutex_destroy(&context->mutex);
+}
+
+static int consume_device_command(runtime_device_command_context_t *context,
+                                  amtech_device_command_t *command)
+{
+    int has_command;
+
+    if (context == NULL || command == NULL)
+    {
+        return 0;
+    }
+
+    pthread_mutex_lock(&context->mutex);
+    has_command = context->has_command;
+    if (has_command)
+    {
+        *command = context->command;
+        context->has_command = 0;
+        context->command.type = AMTECH_DEVICE_COMMAND_NONE;
+        context->command.id[0] = '\0';
+    }
+    pthread_mutex_unlock(&context->mutex);
+
+    return has_command;
+}
+
+static void apply_device_command(runtime_device_command_context_t *context,
+                                 const amtech_config_t *config)
+{
+    amtech_device_command_t command;
+
+    if (!consume_device_command(context, &command))
+    {
+        return;
+    }
+
+    if (command.type == AMTECH_DEVICE_COMMAND_ARM)
+    {
+        runtime_set_manual_armed(1, config);
+        printf("Runtime: accepted app ARM command id=%s\n", command.id);
+    }
+    else if (command.type == AMTECH_DEVICE_COMMAND_DISARM)
+    {
+        runtime_set_manual_armed(0, config);
+        printf("Runtime: accepted app DISARM command id=%s\n", command.id);
+    }
+    else
+    {
+        return;
+    }
+
+    if (amtech_device_command_ack(config, AMTECH_SHOP_ID, &command) != 0)
+    {
+        printf("Runtime: warning: failed to ack app command id=%s\n", command.id);
+    }
 }
 
 static void update_schedule_from_realtime(const amtech_config_t *config)
@@ -1989,6 +2153,9 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
     long long last_alarm_tick_ms = 0;
     long long last_sms_poll_ms = 0;
     long long last_config_sync_ms = 0;
+    runtime_device_command_context_t device_command_context;
+    pthread_t device_command_thread;
+    int device_command_thread_started = 0;
 #ifndef SIMULATE_CAMERA
     camera_result_queue_t camera_queue;
     runtime_camera_config_t camera_configs[AMTECH_RUNTIME_MAX_CAMERAS];
@@ -2001,12 +2168,25 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
     int watch_count;
     int i;
 
+    if (start_device_command_thread(&device_command_context,
+                                    &device_command_thread,
+                                    config,
+                                    AMTECH_SHOP_ID) == 0)
+    {
+        device_command_thread_started = 1;
+    }
+    else
+    {
+        printf("Runtime: warning: app command polling disabled\n");
+    }
+
 #ifndef SIMULATE_CAMERA
     camera_queue_init(&camera_queue);
     pthread_mutex_init(&inference_mutex, NULL);
     camera_count = runtime_build_camera_configs(config, camera_configs, AMTECH_RUNTIME_MAX_CAMERAS);
     if (camera_count < 0)
     {
+        stop_device_command_thread(&device_command_context, device_command_thread, device_command_thread_started);
         pthread_mutex_destroy(&inference_mutex);
         camera_queue_destroy(&camera_queue);
         return -1;
@@ -2023,6 +2203,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
                                 &camera_contexts[i],
                                 &camera_threads[i]) != 0)
         {
+            stop_device_command_thread(&device_command_context, device_command_thread, device_command_thread_started);
             stop_camera_threads(camera_contexts, camera_threads, camera_threads_started);
             pthread_mutex_destroy(&inference_mutex);
             camera_queue_destroy(&camera_queue);
@@ -2054,6 +2235,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
         pthread_mutex_destroy(&inference_mutex);
         camera_queue_destroy(&camera_queue);
 #endif
+        stop_device_command_thread(&device_command_context, device_command_thread, device_command_thread_started);
         return -1;
     }
 
@@ -2067,6 +2249,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
             pthread_mutex_destroy(&inference_mutex);
             camera_queue_destroy(&camera_queue);
 #endif
+            stop_device_command_thread(&device_command_context, device_command_thread, device_command_thread_started);
             return -1;
         }
 
@@ -2100,6 +2283,8 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
             runtime_poll_sms_remote_control(config);
             last_sms_poll_ms = now_ms;
         }
+
+        apply_device_command(&device_command_context, config);
 
         if (last_config_sync_ms == 0 || now_ms - last_config_sync_ms >= AMTECH_CONFIG_SYNC_POLL_MS)
         {

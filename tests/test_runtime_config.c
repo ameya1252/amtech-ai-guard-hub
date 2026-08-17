@@ -1,6 +1,7 @@
 #include "config.h"
 #include "alarm_logic.h"
 #include "config_sync.h"
+#include "device_command_sync.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
 #include "runtime_loop.h"
@@ -455,6 +456,82 @@ static void check_sms_manual_override_blocks_schedule_until_boundary(void)
     check_int("normal schedule arms after manual DISARM override cleared", alarm_logic_is_armed(), 1);
 }
 
+static void check_app_command_manual_override_blocks_schedule_until_boundary(void)
+{
+    amtech_config_t config;
+
+    amtech_config_set_defaults(&config);
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_ARM, &config);
+    check_int("app ARM command sets armed", alarm_logic_is_armed(), 1);
+
+    runtime_test_apply_schedule_armed(0);
+    check_int("schedule cannot immediately disarm app manual ARM", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(0);
+    check_int("repeated same schedule state still cannot disarm app manual ARM", alarm_logic_is_armed(), 1);
+
+    alarm_logic_handle_shutter_dual_named(SHUTTER_OPEN, "shutter-1", "shutter-1");
+    check_int("shutter open triggers after app ARM despite schedule being disarmed", alarm_logic_is_triggered(), 1);
+    alarm_logic_reset();
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("schedule boundary clears app ARM override and keeps scheduled armed", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(0);
+    check_int("normal schedule disarms after app ARM override cleared", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("normal schedule-only arm works before app DISARM", alarm_logic_is_armed(), 1);
+
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_DISARM, &config);
+    check_int("app DISARM command clears armed", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("schedule cannot immediately re-arm app manual DISARM", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("repeated same schedule state still cannot re-arm app manual DISARM", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(0);
+    check_int("schedule boundary clears app DISARM override and keeps scheduled disarmed", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("normal schedule arms after app DISARM override cleared", alarm_logic_is_armed(), 1);
+}
+
+static void check_device_command_sync_parser_and_ack(void)
+{
+    amtech_config_t config;
+    amtech_device_command_t command;
+
+    amtech_config_set_defaults(&config);
+
+    amtech_device_command_simulated_reset();
+    amtech_device_command_set_simulated_response(
+        "{\"ok\":true,\"shop_id\":\"amtech-demo-shop\","
+        "\"pending_command\":\"arm\","
+        "\"pending_command_id\":\"cmd-arm-1\"}");
+    check_int("device command fetch ARM", amtech_device_command_fetch(&config, "amtech-demo-shop", &command), 0);
+    check_int("device command type ARM", command.type, AMTECH_DEVICE_COMMAND_ARM);
+    check_string("device command ARM id", command.id, "cmd-arm-1");
+    check_int("device command ack ARM", amtech_device_command_ack(&config, "amtech-demo-shop", &command), 0);
+    check_int("device command ack count after ARM", amtech_device_command_simulated_ack_count(), 1);
+
+    amtech_device_command_set_simulated_response(
+        "{\"ok\":true,\"shop_id\":\"amtech-demo-shop\","
+        "\"pending_command\":\"disarm\","
+        "\"pending_command_id\":\"cmd-disarm-1\"}");
+    check_int("device command fetch DISARM", amtech_device_command_fetch(&config, "amtech-demo-shop", &command), 0);
+    check_int("device command type DISARM", command.type, AMTECH_DEVICE_COMMAND_DISARM);
+    check_string("device command DISARM id", command.id, "cmd-disarm-1");
+
+    amtech_device_command_set_simulated_response("{\"ok\":true,\"pending_command\":null,\"pending_command_id\":null}");
+    check_int("device command fetch none", amtech_device_command_fetch(&config, "amtech-demo-shop", &command), 0);
+    check_int("device command type none", command.type, AMTECH_DEVICE_COMMAND_NONE);
+}
+
 static void check_camera_monitoring_active_sms(void)
 {
     amtech_config_t config;
@@ -779,7 +856,9 @@ int main(void)
     check_sensor_confirmation_logic();
     check_sms_remote_control();
     check_sms_manual_override_blocks_schedule_until_boundary();
+    check_app_command_manual_override_blocks_schedule_until_boundary();
     check_camera_monitoring_active_sms();
+    check_device_command_sync_parser_and_ack();
     check_config_sync_preserves_unrelated_keys();
 
     if (failures == 0)

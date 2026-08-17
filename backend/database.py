@@ -33,6 +33,10 @@ class Shop(Base):
     owner_email = Column(String(255), nullable=True)
     auth_id = Column(String(255), nullable=True, index=True)
     armed = Column(Boolean, nullable=False, default=False, server_default="false")
+    pending_command = Column(String(16), nullable=True)
+    pending_command_id = Column(String(128), nullable=True)
+    pending_command_created_at = Column(DateTime(timezone=True), nullable=True)
+    pending_command_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="shops")
@@ -261,6 +265,18 @@ def run_migrations():
 
         if "address" not in shop_columns:
             connection.execute(text("ALTER TABLE shops ADD COLUMN address VARCHAR(1024)"))
+
+        if "pending_command" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN pending_command VARCHAR(16)"))
+
+        if "pending_command_id" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN pending_command_id VARCHAR(128)"))
+
+        if "pending_command_created_at" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN pending_command_created_at TIMESTAMP"))
+
+        if "pending_command_acknowledged_at" not in shop_columns:
+            connection.execute(text("ALTER TABLE shops ADD COLUMN pending_command_acknowledged_at TIMESTAMP"))
 
         if "media_url" not in alert_columns:
             connection.execute(text("ALTER TABLE alerts ADD COLUMN media_url VARCHAR(2048)"))

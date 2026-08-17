@@ -663,6 +663,8 @@ def shop_status_to_dict(shop):
         "ok": True,
         "shop_id": shop.id,
         "armed": bool(shop.armed),
+        "pending_command": shop.pending_command,
+        "pending_command_id": shop.pending_command_id,
         "hub_online": True,
         "battery_level": 100,
     }
@@ -686,6 +688,10 @@ def set_shop_armed(shop_id, armed):
             return error_response
 
         shop.armed = armed
+        shop.pending_command = "arm" if armed else "disarm"
+        shop.pending_command_id = str(uuid4())
+        shop.pending_command_created_at = datetime.now(timezone.utc)
+        shop.pending_command_acknowledged_at = None
         db.commit()
         db.refresh(shop)
         return jsonify(shop_status_to_dict(shop))
@@ -709,6 +715,8 @@ def shop_to_dict(shop):
         "device_serial": device.device_serial if device else None,
         "cameras": [camera_to_dict(camera) for camera in sorted(shop.cameras, key=lambda row: row.slot_number)],
         "armed": bool(shop.armed),
+        "pending_command": shop.pending_command,
+        "pending_command_id": shop.pending_command_id,
     }
 
 
@@ -1318,6 +1326,59 @@ def update_device_config(shop_id):
         db.commit()
         db.refresh(shop)
         return jsonify(device_config_to_dict(shop))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.get("/shop/<shop_id>/pending-command")
+def get_pending_command(shop_id):
+    db = SessionLocal()
+    try:
+        shop, error_response = device_config_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        return jsonify({
+            "ok": True,
+            "shop_id": shop.id,
+            "pending_command": shop.pending_command,
+            "pending_command_id": shop.pending_command_id,
+        })
+    finally:
+        db.close()
+
+
+@app.post("/shop/<shop_id>/pending-command/ack")
+def acknowledge_pending_command(shop_id):
+    payload = request.get_json(silent=True) or {}
+    command_id = str(payload.get("pending_command_id") or "").strip()
+    if not command_id:
+        return jsonify({"ok": False, "error": "pending_command_id is required"}), 400
+
+    db = SessionLocal()
+    try:
+        shop, error_response = device_config_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        if shop.pending_command_id != command_id:
+            return jsonify({
+                "ok": False,
+                "error": "pending command id does not match current command",
+                "shop_id": shop.id,
+                "pending_command": shop.pending_command,
+                "pending_command_id": shop.pending_command_id,
+            }), 409
+
+        shop.pending_command = None
+        shop.pending_command_id = None
+        shop.pending_command_acknowledged_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(shop)
+        return jsonify(shop_status_to_dict(shop))
     except Exception:
         db.rollback()
         raise
