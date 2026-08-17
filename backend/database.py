@@ -39,6 +39,8 @@ class Shop(Base):
     devices = relationship("Device", back_populates="shop")
     cameras = relationship("Camera", back_populates="shop")
     alerts = relationship("Alert", back_populates="shop")
+    device_schedule = relationship("ShopDeviceSchedule", back_populates="shop", uselist=False)
+    emergency_contacts = relationship("ShopEmergencyContact", back_populates="shop")
 
 
 class Device(Base):
@@ -109,6 +111,35 @@ class PushToken(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="push_tokens")
+
+
+class ShopDeviceSchedule(Base):
+    __tablename__ = "shop_device_schedules"
+
+    shop_id = Column(String(128), ForeignKey("shops.id"), primary_key=True)
+    arm_hour = Column(Integer, nullable=False, default=23, server_default="23")
+    arm_minute = Column(Integer, nullable=False, default=0, server_default="0")
+    disarm_hour = Column(Integer, nullable=False, default=6, server_default="6")
+    disarm_minute = Column(Integer, nullable=False, default=0, server_default="0")
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    shop = relationship("Shop", back_populates="device_schedule")
+
+
+class ShopEmergencyContact(Base):
+    __tablename__ = "shop_emergency_contacts"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "slot_number", name="uq_shop_emergency_contacts_shop_slot"),
+    )
+
+    id = Column(String(128), primary_key=True)
+    shop_id = Column(String(128), ForeignKey("shops.id"), nullable=False, index=True)
+    slot_number = Column(Integer, nullable=False)
+    name = Column(String(255), nullable=True)
+    phone = Column(String(64), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    shop = relationship("Shop", back_populates="emergency_contacts")
 
 
 def database_url():

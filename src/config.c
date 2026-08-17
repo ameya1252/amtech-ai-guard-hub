@@ -48,6 +48,41 @@ static int parse_int_value(const char *key, const char *value, int *out)
     return 0;
 }
 
+static int parse_time_value(const char *key, const char *value, int *hour, int *minute)
+{
+    char *end = NULL;
+    long parsed_hour;
+    long parsed_minute;
+    const char *separator;
+
+    if (hour == NULL || minute == NULL)
+    {
+        return -1;
+    }
+
+    errno = 0;
+    parsed_hour = strtol(value, &end, 10);
+    if (errno != 0 || end == value || *end != ':')
+    {
+        printf("Config: ignoring invalid time for %s: %s\n", key, value);
+        return -1;
+    }
+
+    separator = end + 1;
+    errno = 0;
+    parsed_minute = strtol(separator, &end, 10);
+    if (errno != 0 || end == separator || *trim_whitespace(end) != '\0' ||
+        parsed_hour < 0 || parsed_hour > 23 || parsed_minute < 0 || parsed_minute > 59)
+    {
+        printf("Config: ignoring invalid time for %s: %s\n", key, value);
+        return -1;
+    }
+
+    *hour = (int)parsed_hour;
+    *minute = (int)parsed_minute;
+    return 0;
+}
+
 static void set_alert_contact(amtech_config_t *config, int index, const char *value)
 {
     if (config == NULL || index < 0 || index >= AMTECH_ALERT_CONTACT_COUNT)
@@ -71,6 +106,10 @@ void amtech_config_set_defaults(amtech_config_t *config)
     config->shutter_count = 1;
     config->panic_enabled = 1;
     config->smoke_enabled = 0;
+    config->schedule_arm_hour = AMTECH_DEFAULT_SCHEDULE_ARM_HOUR;
+    config->schedule_arm_minute = AMTECH_DEFAULT_SCHEDULE_ARM_MINUTE;
+    config->schedule_disarm_hour = AMTECH_DEFAULT_SCHEDULE_DISARM_HOUR;
+    config->schedule_disarm_minute = AMTECH_DEFAULT_SCHEDULE_DISARM_MINUTE;
     snprintf(config->modem_device, sizeof(config->modem_device), "%s", AMTECH_DEFAULT_MODEM_DEVICE);
     set_alert_contact(config, 0, AMTECH_DEFAULT_ALERT_CONTACT_1);
     set_alert_contact(config, 1, AMTECH_DEFAULT_ALERT_CONTACT_2);
@@ -79,6 +118,8 @@ void amtech_config_set_defaults(amtech_config_t *config)
     config->camera_rtsp_url[0] = '\0';
     config->camera2_enabled = 0;
     config->camera2_rtsp_url[0] = '\0';
+    snprintf(config->backend_base_url, sizeof(config->backend_base_url), "%s", AMTECH_DEFAULT_BACKEND_BASE_URL);
+    config->device_config_token[0] = '\0';
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -98,12 +139,17 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=0 CAMERA_RTSP_URL=(disabled) CAMERA2_ENABLED=0 CAMERA2_RTSP_URL=(disabled)\n",
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=0 CAMERA_RTSP_URL=(disabled) CAMERA2_ENABLED=0 CAMERA2_RTSP_URL=(disabled) BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=(unset)\n",
                    path,
+                   config->schedule_arm_hour,
+                   config->schedule_arm_minute,
+                   config->schedule_disarm_hour,
+                   config->schedule_disarm_minute,
                    config->modem_device,
                    config->alert_contacts[0],
                    config->alert_contacts[1],
-                   config->alert_contacts[2]);
+                   config->alert_contacts[2],
+                   config->backend_base_url);
             return 0;
         }
 
@@ -166,6 +212,14 @@ int amtech_config_load(const char *path, amtech_config_t *config)
             }
 
             config->smoke_enabled = parsed_value ? 1 : 0;
+        }
+        else if (strcmp(key, "SCHEDULE_ARM") == 0)
+        {
+            parse_time_value(key, value, &config->schedule_arm_hour, &config->schedule_arm_minute);
+        }
+        else if (strcmp(key, "SCHEDULE_DISARM") == 0)
+        {
+            parse_time_value(key, value, &config->schedule_disarm_hour, &config->schedule_disarm_minute);
         }
         else if (strcmp(key, "MODEM_DEVICE") == 0)
         {
@@ -235,6 +289,26 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
             snprintf(config->camera2_rtsp_url, sizeof(config->camera2_rtsp_url), "%s", value);
         }
+        else if (strcmp(key, "BACKEND_BASE_URL") == 0)
+        {
+            if (value[0] == '\0' || strlen(value) >= sizeof(config->backend_base_url))
+            {
+                printf("Config: invalid BACKEND_BASE_URL, keeping %s\n", config->backend_base_url);
+                continue;
+            }
+
+            snprintf(config->backend_base_url, sizeof(config->backend_base_url), "%s", value);
+        }
+        else if (strcmp(key, "DEVICE_CONFIG_TOKEN") == 0)
+        {
+            if (strlen(value) >= sizeof(config->device_config_token))
+            {
+                printf("Config: DEVICE_CONFIG_TOKEN too long, keeping current value\n");
+                continue;
+            }
+
+            snprintf(config->device_config_token, sizeof(config->device_config_token), "%s", value);
+        }
         else
         {
             printf("Config: ignoring unknown key %s\n", key);
@@ -250,10 +324,14 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=%d CAMERA_RTSP_URL=%s CAMERA2_ENABLED=%d CAMERA2_RTSP_URL=%s\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=%d CAMERA_RTSP_URL=%s CAMERA2_ENABLED=%d CAMERA2_RTSP_URL=%s BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=%s\n",
            config->shutter_count,
            config->panic_enabled,
            config->smoke_enabled,
+           config->schedule_arm_hour,
+           config->schedule_arm_minute,
+           config->schedule_disarm_hour,
+           config->schedule_disarm_minute,
            config->modem_device,
            config->alert_contacts[0],
            config->alert_contacts[1],
@@ -261,6 +339,8 @@ int amtech_config_load(const char *path, amtech_config_t *config)
            config->camera_enabled,
            config->camera_rtsp_url[0] != '\0' ? config->camera_rtsp_url : "(disabled)",
            config->camera2_enabled,
-           config->camera2_rtsp_url[0] != '\0' ? config->camera2_rtsp_url : "(disabled)");
+           config->camera2_rtsp_url[0] != '\0' ? config->camera2_rtsp_url : "(disabled)",
+           config->backend_base_url,
+           config->device_config_token[0] != '\0' ? "(set)" : "(unset)");
     return 0;
 }

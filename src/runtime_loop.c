@@ -1,6 +1,7 @@
 #include "alarm_logic.h"
 #include "camera_detection.h"
 #include "config.h"
+#include "config_sync.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
 #include "modem_state.h"
@@ -590,6 +591,24 @@ static void runtime_set_manual_armed(int next_armed, const amtech_config_t *conf
 {
     runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
     runtime_set_armed(next_armed, config);
+}
+
+static void runtime_apply_config_schedule(const amtech_config_t *config)
+{
+    if (config == NULL)
+    {
+        return;
+    }
+
+    schedule_set_armed_window(config->schedule_arm_hour,
+                              config->schedule_arm_minute,
+                              config->schedule_disarm_hour,
+                              config->schedule_disarm_minute);
+    printf("Runtime: schedule window set from config %02d:%02d-%02d:%02d\n",
+           config->schedule_arm_hour,
+           config->schedule_arm_minute,
+           config->schedule_disarm_hour,
+           config->schedule_disarm_minute);
 }
 
 static runtime_camera_static_state_t *runtime_find_static_camera(const char *source, int create)
@@ -1958,7 +1977,7 @@ static void handle_sensor_event(gpio_watch_t *watch)
                                           watch->shutter_event_type);
 }
 
-static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
+static int run_interrupt_loop(int force_armed, amtech_config_t *config)
 {
     /*
      * Shutter uses both edges because wire-cut tamper from the closed state is
@@ -1969,6 +1988,7 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
     long long last_schedule_tick_ms = 0;
     long long last_alarm_tick_ms = 0;
     long long last_sms_poll_ms = 0;
+    long long last_config_sync_ms = 0;
 #ifndef SIMULATE_CAMERA
     camera_result_queue_t camera_queue;
     runtime_camera_config_t camera_configs[AMTECH_RUNTIME_MAX_CAMERAS];
@@ -2079,6 +2099,15 @@ static int run_interrupt_loop(int force_armed, const amtech_config_t *config)
         {
             runtime_poll_sms_remote_control(config);
             last_sms_poll_ms = now_ms;
+        }
+
+        if (last_config_sync_ms == 0 || now_ms - last_config_sync_ms >= AMTECH_CONFIG_SYNC_POLL_MS)
+        {
+            if (amtech_config_sync_poll(runtime_config_path(), AMTECH_SHOP_ID, config) > 0)
+            {
+                runtime_apply_config_schedule(config);
+            }
+            last_config_sync_ms = now_ms;
         }
 
 #ifdef SIMULATE_CAMERA
@@ -2305,7 +2334,7 @@ int main(int argc, char **argv)
         sensor_input_init(AMTECH_SMOKE_GPIO_PIN);
     }
 #endif
-    schedule_set_armed_window(23, 0, 6, 0);
+    runtime_apply_config_schedule(&config);
     if (modem_sms_receive_init() != 0)
     {
         printf("Runtime: warning: SMS remote control initialization failed; continuing without SMS control\n");

@@ -49,11 +49,18 @@ Supported keys:
 SHUTTER_COUNT=1
 PANIC_ENABLED=1
 SMOKE_ENABLED=0
+SCHEDULE_ARM=23:00
+SCHEDULE_DISARM=06:00
 MODEM_DEVICE=/dev/ttyS5
 ALERT_CONTACT_1=+918550991121
 ALERT_CONTACT_2=+919922434811
 ALERT_CONTACT_3=+919922435710
+CAMERA_ENABLED=0
 CAMERA_RTSP_URL=rtsp://user:pass@camera-ip:554/stream1
+CAMERA2_ENABLED=0
+CAMERA2_RTSP_URL=
+BACKEND_BASE_URL=https://amtech-ai-guard-hub-production.up.railway.app
+DEVICE_CONFIG_TOKEN=
 ```
 
 Important defaults:
@@ -61,10 +68,21 @@ Important defaults:
 - `SHUTTER_COUNT=1`
 - `PANIC_ENABLED=1`
 - `SMOKE_ENABLED=0`
+- `SCHEDULE_ARM=23:00`
+- `SCHEDULE_DISARM=06:00`
 - `MODEM_DEVICE=/dev/ttyS5`
-- `CAMERA_RTSP_URL` is empty, so camera detection is disabled unless configured.
+- `CAMERA_ENABLED=0` and `CAMERA2_ENABLED=0`, so camera detection is disabled unless explicitly configured.
+- `DEVICE_CONFIG_TOKEN` is empty, so backend config sync is disabled unless explicitly configured.
 
 The shutter and smoke config defaults are deliberately conservative so unwired/floating pins are not watched accidentally.
+
+Backend config sync now updates only `SCHEDULE_ARM`, `SCHEDULE_DISARM`, and `ALERT_CONTACT_1/2/3`. It preserves local hardware install keys such as shutter count, camera URLs, modem device, and sensor enable flags.
+
+Status as of this checkpoint:
+
+- Backend source and device simulation tests are complete.
+- Live Railway endpoint verification is part of this deploy step.
+- Real hardware polling from the Luckfox board is deferred until SSH/board access is available again.
 
 ## GPIO And Sensor Hardware
 
@@ -391,6 +409,8 @@ It provides:
 - `POST /shop/<shop_id>/disarm`
 - `GET /shop/<shop_id>/status`
 - `POST /shop/<shop_id>/media/upload-url`
+- `GET /shop/<shop_id>/device-config`
+- `PUT /shop/<shop_id>/device-config`
 - `GET /alerts/<shop_id>`
 
 Security and infrastructure:
@@ -400,6 +420,7 @@ Security and infrastructure:
 - Basic rate limiting on auth routes.
 - Database keepalive thread for Railway/Neon stability.
 - R2 presigned upload URL support for future alert images/videos.
+- Device config sync endpoint for schedule and emergency contact settings. The app uses owner JWT auth; the physical hub can use the `X-AMTECH-DEVICE-CONFIG-TOKEN` shared-secret header. Backend behavior is locally tested; live Railway verification is being performed after deployment. Device-side polling is simulation-tested only until the board is reachable again.
 
 Database:
 
@@ -407,6 +428,8 @@ Database:
 - `shops`
 - `devices`
 - `alerts`
+- `shop_device_schedules`
+- `shop_emergency_contacts`
 
 The backend reads `DATABASE_URL` from the environment. Neon Postgres is intended for Railway. SQLite can still be used for local testing.
 
@@ -425,6 +448,7 @@ Current C test coverage includes:
 - `tests/test_modem_hal.c`
 - `tests/test_alert_dispatch.c`
 - `tests/test_camera_detection.c`
+- `tests/test_camera_queue.c`
 
 Diagnostic/hardware bring-up tests and scripts include:
 
@@ -440,6 +464,7 @@ Simulation flags:
 - `SIMULATE_GPIO`
 - `SIMULATE_MODEM`
 - `SIMULATE_CAMERA`
+- `SIMULATE_NETWORK`
 
 ## What Is Still Not Finished
 
@@ -448,7 +473,7 @@ Still pending:
 - Final production service packaging for `runtime_loop`.
 - Real end-to-end runtime testing with GPIO sensors, camera RTSP, NPU inference, relays, and modem wired together for a long duration.
 - Mobile app.
-- App-managed contact lists and device/shop configuration sync.
+- App UI for editing contact lists and schedules. The backend/device sync foundation now exists, but the settings screens are not built yet.
 - Camera media upload from hub to backend/R2 during alerts.
 - Recovery strategy for modem failures beyond the current terminal `FAILED` state.
 - Replacing subprocess-based camera detection with a lower-level RKNN/RKMPI integration if later performance or reliability requires it.

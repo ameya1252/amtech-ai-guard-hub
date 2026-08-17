@@ -15,7 +15,19 @@ from flask_limiter.util import get_remote_address
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from database import Alert, Camera, CameraInventory, Device, PushToken, Shop, SessionLocal, User, init_db
+from database import (
+    Alert,
+    Camera,
+    CameraInventory,
+    Device,
+    PushToken,
+    Shop,
+    ShopDeviceSchedule,
+    ShopEmergencyContact,
+    SessionLocal,
+    User,
+    init_db,
+)
 
 
 app = Flask(__name__)
@@ -25,6 +37,11 @@ UPLOAD_URL_EXPIRES_SECONDS = 900
 DATABASE_KEEPALIVE_INTERVAL_SECONDS = int(os.getenv("DATABASE_KEEPALIVE_INTERVAL_SECONDS", "240"))
 EXPO_PUSH_SEND_URL = "https://exp.host/--/api/v2/push/send"
 PUSH_ALERT_EVENT_TYPES = {"intrusion", "intrusion-front", "intrusion-parking"}
+DEFAULT_DEVICE_CONFIG_CONTACTS = [
+    {"slot": 1, "name": "", "phone": "+918550991121"},
+    {"slot": 2, "name": "", "phone": "+919922434811"},
+    {"slot": 3, "name": "", "phone": "+919922435710"},
+]
 
 
 def rate_limit_key():
@@ -304,6 +321,76 @@ def parse_camera_registration(payload):
     }
 
 
+def parse_time_parts(value, field_name):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be an integer")
+    return parsed
+
+
+def validate_hour_minute(hour, minute, label):
+    if hour < 0 or hour > 23:
+        raise ValueError(f"{label}_hour must be between 0 and 23")
+    if minute < 0 or minute > 59:
+        raise ValueError(f"{label}_minute must be between 0 and 59")
+
+
+def parse_device_config_update(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    schedule = payload.get("schedule", {})
+    contacts = payload.get("emergency_contacts", [])
+    if schedule is None:
+        schedule = {}
+    if not isinstance(schedule, dict):
+        raise ValueError("schedule must be an object")
+    if not isinstance(contacts, list):
+        raise ValueError("emergency_contacts must be a list")
+    if len(contacts) > 3:
+        raise ValueError("emergency_contacts may contain at most 3 contacts")
+
+    arm_hour = parse_time_parts(schedule.get("arm_hour", 23), "arm_hour")
+    arm_minute = parse_time_parts(schedule.get("arm_minute", 0), "arm_minute")
+    disarm_hour = parse_time_parts(schedule.get("disarm_hour", 6), "disarm_hour")
+    disarm_minute = parse_time_parts(schedule.get("disarm_minute", 0), "disarm_minute")
+    validate_hour_minute(arm_hour, arm_minute, "arm")
+    validate_hour_minute(disarm_hour, disarm_minute, "disarm")
+
+    normalized_contacts = []
+    seen_slots = set()
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            raise ValueError("each emergency contact must be an object")
+        slot = parse_time_parts(contact.get("slot"), "slot")
+        if slot < 1 or slot > 3:
+            raise ValueError("contact slot must be 1, 2, or 3")
+        if slot in seen_slots:
+            raise ValueError("duplicate contact slot")
+        seen_slots.add(slot)
+
+        phone = str(contact.get("phone", "")).strip()
+        if not phone:
+            raise ValueError("contact phone is required")
+
+        normalized_contacts.append({
+            "slot": slot,
+            "name": str(contact.get("name", "")).strip(),
+            "phone": phone,
+        })
+
+    return {
+        "schedule": {
+            "arm_hour": arm_hour,
+            "arm_minute": arm_minute,
+            "disarm_hour": disarm_hour,
+            "disarm_minute": disarm_minute,
+        },
+        "emergency_contacts": normalized_contacts,
+    }
+
+
 def parse_signup(payload):
     if not isinstance(payload, dict):
         raise ValueError("request body must be a JSON object")
@@ -557,6 +644,42 @@ def owned_shop_or_response(db, shop_id):
     return shop, None
 
 
+def user_from_bearer_token(db):
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+
+    token = header.removeprefix("Bearer ").strip()
+    try:
+        payload = jwt.decode(token, jwt_secret(), algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    return db.get(User, user_id)
+
+
+def device_config_shop_or_response(db, shop_id):
+    shop = db.get(Shop, shop_id)
+    if shop is None:
+        return None, (jsonify({"ok": False, "error": "shop not found", "shop_id": shop_id}), 404)
+
+    configured_token = os.getenv("DEVICE_CONFIG_SYNC_TOKEN", "").strip()
+    provided_token = request.headers.get("X-AMTECH-DEVICE-CONFIG-TOKEN", "").strip()
+    if configured_token and provided_token and provided_token == configured_token:
+        return shop, None
+
+    user = user_from_bearer_token(db)
+    if user is None:
+        return None, (jsonify({"ok": False, "error": "authorization token or device config token is required"}), 401)
+    if shop.user_id != user.id:
+        return None, (jsonify({"ok": False, "error": "you do not have access to this shop", "shop_id": shop_id}), 403)
+
+    return shop, None
+
+
 def shop_summary_to_dict(shop):
     device = shop.devices[0] if shop.devices else None
     return {
@@ -589,6 +712,87 @@ def get_or_seed_camera_inventory(db, payload):
         return inventory
 
     return None
+
+
+def default_device_schedule():
+    return {
+        "arm_hour": 23,
+        "arm_minute": 0,
+        "disarm_hour": 6,
+        "disarm_minute": 0,
+    }
+
+
+def device_schedule_to_dict(schedule):
+    if schedule is None:
+        return default_device_schedule()
+
+    return {
+        "arm_hour": int(schedule.arm_hour),
+        "arm_minute": int(schedule.arm_minute),
+        "disarm_hour": int(schedule.disarm_hour),
+        "disarm_minute": int(schedule.disarm_minute),
+    }
+
+
+def emergency_contacts_to_dict(contact_rows):
+    by_slot = {
+        contact.slot_number: {
+            "slot": contact.slot_number,
+            "name": contact.name or "",
+            "phone": contact.phone,
+        }
+        for contact in contact_rows
+    }
+
+    return [
+        by_slot.get(default_contact["slot"], default_contact)
+        for default_contact in DEFAULT_DEVICE_CONFIG_CONTACTS
+    ]
+
+
+def device_config_to_dict(shop):
+    return {
+        "ok": True,
+        "shop_id": shop.id,
+        "schedule": device_schedule_to_dict(shop.device_schedule),
+        "emergency_contacts": emergency_contacts_to_dict(
+            sorted(shop.emergency_contacts, key=lambda row: row.slot_number)
+        ),
+    }
+
+
+def upsert_device_config(db, shop, payload):
+    now = datetime.now(timezone.utc)
+    schedule_payload = payload["schedule"]
+    schedule_row = shop.device_schedule
+    if schedule_row is None:
+        schedule_row = ShopDeviceSchedule(shop=shop)
+        db.add(schedule_row)
+
+    schedule_row.arm_hour = schedule_payload["arm_hour"]
+    schedule_row.arm_minute = schedule_payload["arm_minute"]
+    schedule_row.disarm_hour = schedule_payload["disarm_hour"]
+    schedule_row.disarm_minute = schedule_payload["disarm_minute"]
+    schedule_row.updated_at = now
+
+    existing_contacts = {
+        contact.slot_number: contact
+        for contact in shop.emergency_contacts
+    }
+    for contact_payload in payload["emergency_contacts"]:
+        slot = contact_payload["slot"]
+        contact = existing_contacts.get(slot)
+        if contact is None:
+            contact = ShopEmergencyContact(
+                id=str(uuid4()),
+                shop=shop,
+                slot_number=slot,
+            )
+            db.add(contact)
+        contact.name = contact_payload["name"]
+        contact.phone = contact_payload["phone"]
+        contact.updated_at = now
 
 
 @app.post("/me/push-token")
@@ -901,6 +1105,44 @@ def shop_status(shop_id):
             return error_response
 
         return jsonify(shop_status_to_dict(shop))
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.get("/shop/<shop_id>/device-config")
+def get_device_config(shop_id):
+    db = SessionLocal()
+    try:
+        shop, error_response = device_config_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        return jsonify(device_config_to_dict(shop))
+    finally:
+        db.close()
+
+
+@app.put("/shop/<shop_id>/device-config")
+@auth_required
+def update_device_config(shop_id):
+    try:
+        payload = parse_device_config_update(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        shop, error_response = owned_shop_or_response(db, shop_id)
+        if error_response:
+            return error_response
+
+        upsert_device_config(db, shop, payload)
+        db.commit()
+        db.refresh(shop)
+        return jsonify(device_config_to_dict(shop))
     except Exception:
         db.rollback()
         raise

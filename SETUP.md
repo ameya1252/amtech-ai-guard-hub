@@ -62,6 +62,34 @@ The backend creates these tables automatically at startup:
 - `shops`
 - `devices`
 - `alerts`
+- `push_tokens`
+- `camera_inventory`
+- `cameras`
+- `shop_device_schedules`
+- `shop_emergency_contacts`
+
+## Device Config Sync Backend
+
+The backend exposes:
+
+```text
+GET /shop/<shop_id>/device-config
+PUT /shop/<shop_id>/device-config
+```
+
+`GET` returns the hub's baseline schedule and three emergency contacts. The mobile app can call it with the owner's normal JWT. The physical hub can call it with:
+
+```text
+X-AMTECH-DEVICE-CONFIG-TOKEN: <shared token>
+```
+
+Railway must set the matching environment variable:
+
+```text
+DEVICE_CONFIG_SYNC_TOKEN=<same shared token>
+```
+
+`PUT` is owner-authenticated and updates the schedule/contact rows. This is the endpoint the future Settings UI will use.
 
 For local testing without Neon:
 
@@ -89,6 +117,8 @@ Example config:
 SHUTTER_COUNT=1
 PANIC_ENABLED=1
 SMOKE_ENABLED=0
+SCHEDULE_ARM=23:00
+SCHEDULE_DISARM=06:00
 MODEM_DEVICE=/dev/ttyS5
 ALERT_CONTACT_1=+918550991121
 ALERT_CONTACT_2=+919922434811
@@ -97,6 +127,8 @@ CAMERA_ENABLED=1
 CAMERA_RTSP_URL=rtsp://user:pass@camera-ip:554/stream1
 CAMERA2_ENABLED=0
 CAMERA2_RTSP_URL=
+BACKEND_BASE_URL=https://amtech-ai-guard-hub-production.up.railway.app
+DEVICE_CONFIG_TOKEN=
 ```
 
 Notes:
@@ -107,7 +139,10 @@ Notes:
 - `SHUTTER_COUNT=1` means Shutter-2 GPIO pins are not exported or watched.
 - `SMOKE_ENABLED=0` is the default so unwired smoke pins cannot false-trigger.
 - `MODEM_DEVICE` defaults to `/dev/ttyS5` but is configurable until the final PCB UART mapping is locked.
+- `SCHEDULE_ARM` and `SCHEDULE_DISARM` define the baseline automatic arm/disarm window. Overnight windows such as `23:00` to `06:00` are supported.
 - `ALERT_CONTACT_1/2/3` are used for call/SMS alert escalation and are also the only numbers allowed to control the system by SMS.
+- `BACKEND_BASE_URL` defaults to the live Railway backend.
+- `DEVICE_CONFIG_TOKEN` enables backend device-config polling. Leave it empty to disable sync cleanly.
 
 Future app/backend device configuration should map UI controls to these config keys:
 
@@ -119,6 +154,8 @@ CAMERA_ENABLED=0|1
 CAMERA_RTSP_URL=rtsp://...
 CAMERA2_ENABLED=0|1
 CAMERA2_RTSP_URL=rtsp://...
+SCHEDULE_ARM=HH:MM
+SCHEDULE_DISARM=HH:MM
 ALERT_CONTACT_1=+91...
 ALERT_CONTACT_2=+91...
 ALERT_CONTACT_3=+91...
@@ -127,6 +164,8 @@ ALERT_CONTACT_3=+91...
 Current firmware support status:
 
 - `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `CAMERA_ENABLED`, `CAMERA_RTSP_URL`, `CAMERA2_ENABLED`, `CAMERA2_RTSP_URL`, and `ALERT_CONTACT_1/2/3` are implemented today.
+- Backend-to-device config sync is implemented for `SCHEDULE_ARM`, `SCHEDULE_DISARM`, and `ALERT_CONTACT_1/2/3`. The hub polls `GET /shop/<shop_id>/device-config` every 5 minutes when `DEVICE_CONFIG_TOKEN` is configured, then atomically updates only those synced keys in `/root/amtech_config.txt`.
+- Config sync deliberately preserves local install-specific keys such as `SHUTTER_COUNT`, `PANIC_ENABLED`, `SMOKE_ENABLED`, `MODEM_DEVICE`, and camera RTSP settings.
 - The app/backend should treat `CAMERA_ENABLED` and `CAMERA2_ENABLED` as the actual toggles. A URL alone is not enough to start a camera.
 - SMS remote control is implemented today: an authorized contact can send `ARM`, `DISARM`, `STOP`, `STATUS`, or `HELP` to the hub SIM number. `STOP` clears an active alarm and disarms the system. Unknown senders and unknown commands are ignored without a reply.
 - SMS `ARM` and `DISARM` are manual overrides. Once an owner sends `ARM`, the real-time schedule is not allowed to immediately disarm the system just because the current time is outside the scheduled armed window. Once an owner sends `DISARM` or `STOP`, the schedule is not allowed to immediately re-arm it. The manual override clears at the next natural schedule boundary, returning the hub to normal schedule-driven behavior.
@@ -140,7 +179,7 @@ The runtime now links pthreads because camera detection runs in a background thr
 Cross-compile inside the Docker container:
 
 ```sh
-docker exec luckfox-dev bash -c "cd /workspace && mkdir -p build/luckfox && /workspace/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -Wall -Wextra -I /workspace/src /workspace/src/runtime_loop.c /workspace/src/camera_detection.c /workspace/src/config.c /workspace/src/schedule.c /workspace/src/alarm_logic.c /workspace/src/alert_dispatch.c /workspace/src/gpio_control.c /workspace/src/sensor_input.c /workspace/src/modem_hal.c /workspace/src/modem_state.c /workspace/src/sim_modem.c -pthread -o /workspace/build/luckfox/runtime_loop"
+docker exec luckfox-dev bash -c "cd /workspace && mkdir -p build/luckfox && /workspace/luckfox-pico/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-gcc -Wall -Wextra -I /workspace/src /workspace/src/runtime_loop.c /workspace/src/camera_detection.c /workspace/src/config.c /workspace/src/config_sync.c /workspace/src/schedule.c /workspace/src/alarm_logic.c /workspace/src/alert_dispatch.c /workspace/src/gpio_control.c /workspace/src/sensor_input.c /workspace/src/modem_hal.c /workspace/src/modem_state.c /workspace/src/sim_modem.c -pthread -o /workspace/build/luckfox/runtime_loop"
 ```
 
 For local simulation tests, use the relevant simulation flags:

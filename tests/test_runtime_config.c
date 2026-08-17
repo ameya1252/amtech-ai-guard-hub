@@ -1,5 +1,6 @@
 #include "config.h"
 #include "alarm_logic.h"
+#include "config_sync.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
 #include "runtime_loop.h"
@@ -515,6 +516,88 @@ static void check_camera_monitoring_active_sms(void)
                  "System ARMED");
 }
 
+static void check_config_sync_preserves_unrelated_keys(void)
+{
+    const char *config_path = "/tmp/amtech_config_sync_test.txt";
+    FILE *fp;
+    amtech_config_t config;
+    char contents[2048];
+    size_t bytes_read;
+
+    fp = fopen(config_path, "w");
+    if (fp == NULL)
+    {
+        printf("FAIL: could not write config sync test file\n");
+        failures++;
+        return;
+    }
+    fprintf(fp,
+            "SHUTTER_COUNT=2\n"
+            "PANIC_ENABLED=1\n"
+            "SMOKE_ENABLED=1\n"
+            "SCHEDULE_ARM=23:00\n"
+            "SCHEDULE_DISARM=06:00\n"
+            "MODEM_DEVICE=/dev/ttyS1\n"
+            "ALERT_CONTACT_1=+911111111111\n"
+            "ALERT_CONTACT_2=+912222222222\n"
+            "ALERT_CONTACT_3=+913333333333\n"
+            "CAMERA_ENABLED=1\n"
+            "CAMERA_RTSP_URL=rtsp://front\n"
+            "CAMERA2_ENABLED=1\n"
+            "CAMERA2_RTSP_URL=rtsp://parking\n"
+            "BACKEND_BASE_URL=https://backend.example\n"
+            "DEVICE_CONFIG_TOKEN=local-token\n");
+    fclose(fp);
+
+    check_int("config sync initial load", amtech_config_load(config_path, &config), 0);
+    amtech_config_sync_set_simulated_response(
+        "{\"ok\":true,\"shop_id\":\"amtech-demo-shop\","
+        "\"schedule\":{\"arm_hour\":21,\"arm_minute\":30,\"disarm_hour\":7,\"disarm_minute\":15},"
+        "\"emergency_contacts\":["
+        "{\"slot\":1,\"name\":\"A\",\"phone\":\"+914444444444\"},"
+        "{\"slot\":2,\"name\":\"B\",\"phone\":\"+915555555555\"},"
+        "{\"slot\":3,\"name\":\"C\",\"phone\":\"+916666666666\"}]}");
+
+    check_int("config sync poll applies changed backend config",
+              amtech_config_sync_poll(config_path, "amtech-demo-shop", &config),
+              1);
+    check_int("config sync updated arm hour", config.schedule_arm_hour, 21);
+    check_int("config sync updated arm minute", config.schedule_arm_minute, 30);
+    check_int("config sync updated disarm hour", config.schedule_disarm_hour, 7);
+    check_int("config sync updated disarm minute", config.schedule_disarm_minute, 15);
+    check_string("config sync updated contact 1", config.alert_contacts[0], "+914444444444");
+    check_string("config sync preserved modem device", config.modem_device, "/dev/ttyS1");
+    check_string("config sync preserved camera URL", config.camera_rtsp_url, "rtsp://front");
+    check_string("config sync preserved camera2 URL", config.camera2_rtsp_url, "rtsp://parking");
+    check_string("config sync preserved backend URL", config.backend_base_url, "https://backend.example");
+    check_string("config sync preserved device token", config.device_config_token, "local-token");
+
+    fp = fopen(config_path, "r");
+    if (fp == NULL)
+    {
+        printf("FAIL: could not read config sync result file\n");
+        failures++;
+        remove(config_path);
+        return;
+    }
+    bytes_read = fread(contents, 1, sizeof(contents) - 1, fp);
+    contents[bytes_read] = '\0';
+    fclose(fp);
+
+    check_contains("config sync file has updated schedule arm", contents, "SCHEDULE_ARM=21:30");
+    check_contains("config sync file has updated schedule disarm", contents, "SCHEDULE_DISARM=07:15");
+    check_contains("config sync file has updated contact 3", contents, "ALERT_CONTACT_3=+916666666666");
+    check_contains("config sync file preserves shutter count", contents, "SHUTTER_COUNT=2");
+    check_contains("config sync file preserves camera1 URL", contents, "CAMERA_RTSP_URL=rtsp://front");
+    check_contains("config sync file preserves camera2 URL", contents, "CAMERA2_RTSP_URL=rtsp://parking");
+
+    check_int("config sync same payload no-op",
+              amtech_config_sync_poll(config_path, "amtech-demo-shop", &config),
+              0);
+
+    remove(config_path);
+}
+
 int main(void)
 {
     amtech_config_t config;
@@ -529,6 +612,10 @@ int main(void)
     check_int("missing config default shutter count", config.shutter_count, 1);
     check_int("missing config default panic enabled", config.panic_enabled, 1);
     check_int("missing config default smoke disabled", config.smoke_enabled, 0);
+    check_int("missing config default schedule arm hour", config.schedule_arm_hour, 23);
+    check_int("missing config default schedule arm minute", config.schedule_arm_minute, 0);
+    check_int("missing config default schedule disarm hour", config.schedule_disarm_hour, 6);
+    check_int("missing config default schedule disarm minute", config.schedule_disarm_minute, 0);
     check_string("missing config default modem device", config.modem_device, AMTECH_DEFAULT_MODEM_DEVICE);
     check_string("missing config default alert contact 1",
                  config.alert_contacts[0],
@@ -543,6 +630,7 @@ int main(void)
     check_string("missing config default camera URL", config.camera_rtsp_url, "");
     check_int("missing config default camera2 disabled", config.camera2_enabled, 0);
     check_string("missing config default camera2 URL", config.camera2_rtsp_url, "");
+    check_string("missing config default backend base URL", config.backend_base_url, AMTECH_DEFAULT_BACKEND_BASE_URL);
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -550,13 +638,17 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nSCHEDULE_ARM=22:15\nSCHEDULE_DISARM=05:45\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\nBACKEND_BASE_URL=https://example.test\nDEVICE_CONFIG_TOKEN=test-token\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
     check_int("two-shutter config shutter count", config.shutter_count, 2);
     check_int("two-shutter config panic enabled", config.panic_enabled, 1);
     check_int("two-shutter config smoke enabled", config.smoke_enabled, 1);
+    check_int("configured schedule arm hour", config.schedule_arm_hour, 22);
+    check_int("configured schedule arm minute", config.schedule_arm_minute, 15);
+    check_int("configured schedule disarm hour", config.schedule_disarm_hour, 5);
+    check_int("configured schedule disarm minute", config.schedule_disarm_minute, 45);
     check_string("configured modem device", config.modem_device, "/dev/ttyS1");
     check_string("configured alert contact 1", config.alert_contacts[0], "+919999999991");
     check_string("configured alert contact 2", config.alert_contacts[1], "+919999999992");
@@ -569,6 +661,8 @@ int main(void)
     check_string("configured camera2 RTSP URL",
                  config.camera2_rtsp_url,
                  "rtsp://user:pass@192.168.0.4:554/stream1");
+    check_string("configured backend base URL", config.backend_base_url, "https://example.test");
+    check_string("configured device config token", config.device_config_token, "test-token");
 
     {
         runtime_camera_config_t cameras[AMTECH_RUNTIME_MAX_CAMERAS];
@@ -686,6 +780,7 @@ int main(void)
     check_sms_remote_control();
     check_sms_manual_override_blocks_schedule_until_boundary();
     check_camera_monitoring_active_sms();
+    check_config_sync_preserves_unrelated_keys();
 
     if (failures == 0)
     {
