@@ -46,6 +46,32 @@ curl https://amtech-ai-guard-hub-production.up.railway.app/health
 
 The backend no longer sends WhatsApp messages. It stores alerts in the database for the app's alert history feed.
 
+## Backend Password Reset SMS
+
+Forgot-password OTPs are sent by the backend, not by the physical hub's SIM7672 modem. This is deliberate: password reset must work even if a customer's hub is offline.
+
+Safe default for local/dev/Railway until MSG91 is configured:
+
+```text
+SIMULATE_SMS=1
+```
+
+With simulation enabled, `POST /auth/forgot-password` logs the OTP that would be sent and stores the hashed OTP in the database for verification.
+
+Production MSG91 variables:
+
+```text
+SIMULATE_SMS=0
+SMS_PROVIDER=msg91
+MSG91_AUTH_KEY=...
+MSG91_SENDER_ID=...
+MSG91_PASSWORD_RESET_MESSAGE=Your AMTECH password reset OTP is ##OTP##. It expires in 10 minutes.
+PASSWORD_RESET_OTP_SECRET=...
+PASSWORD_RESET_OTP_EXPIRY_MINUTES=10
+```
+
+Before setting `SIMULATE_SMS=0`, complete India DLT registration and get the OTP sender/template approved inside MSG91. The backend expects app users' phone numbers in `+91XXXXXXXXXX` format.
+
 ## Backend Database
 
 The backend reads its database connection from:
@@ -67,6 +93,7 @@ The backend creates these tables automatically at startup:
 - `cameras`
 - `shop_device_schedules`
 - `shop_emergency_contacts`
+- `password_reset_otps`
 
 ## Device Config Sync Backend
 

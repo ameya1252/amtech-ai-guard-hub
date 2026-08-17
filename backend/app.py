@@ -1,7 +1,10 @@
 import os
+import hashlib
+import hmac
+import secrets
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from uuid import uuid4
 
@@ -20,6 +23,7 @@ from database import (
     Camera,
     CameraInventory,
     Device,
+    PasswordResetOtp,
     PushToken,
     Shop,
     ShopDeviceSchedule,
@@ -28,6 +32,7 @@ from database import (
     User,
     init_db,
 )
+from sms_provider import normalize_india_phone, send_password_reset_otp
 
 
 app = Flask(__name__)
@@ -42,6 +47,7 @@ DEFAULT_DEVICE_CONFIG_CONTACTS = [
     {"slot": 2, "name": "", "phone": "+919922434811"},
     {"slot": 3, "name": "", "phone": "+919922435710"},
 ]
+PASSWORD_RESET_OTP_EXPIRY_MINUTES = int(os.getenv("PASSWORD_RESET_OTP_EXPIRY_MINUTES", "10"))
 
 
 def rate_limit_key():
@@ -123,6 +129,29 @@ def verify_password(password, password_hash):
     return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
 
 
+def otp_secret():
+    return os.getenv("PASSWORD_RESET_OTP_SECRET", jwt_secret())
+
+
+def hash_otp(phone_number, otp):
+    message = f"{normalize_india_phone(phone_number)}:{otp}".encode("utf-8")
+    return hmac.new(otp_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def generate_otp():
+    return f"{secrets.randbelow(1000000):06d}"
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def is_expired(expires_at):
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= now_utc()
+
+
 def create_token(user):
     payload = {
         "sub": user.id,
@@ -165,6 +194,15 @@ def auth_required(view):
         return view(*args, **kwargs)
 
     return wrapped
+
+
+def find_user_by_phone(db, phone_number):
+    normalized_target = normalize_india_phone(phone_number)
+    users = db.query(User).filter(User.phone_number.isnot(None)).all()
+    for user in users:
+        if normalize_india_phone(user.phone_number) == normalized_target:
+            return user
+    return None
 
 
 def r2_client():
@@ -428,6 +466,47 @@ def parse_login(payload):
     return {
         "email": str(email).strip().lower(),
         "password": str(password),
+    }
+
+
+def parse_forgot_password(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    phone_number = normalize_india_phone(payload.get("phone_number"))
+    if not phone_number:
+        raise ValueError("phone_number is required")
+    if not phone_number.startswith("+91") or len(phone_number) != 13:
+        raise ValueError("phone_number must use +91XXXXXXXXXX format")
+
+    return {"phone_number": phone_number}
+
+
+def parse_verify_reset_otp(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+
+    phone_number = normalize_india_phone(payload.get("phone_number"))
+    otp = str(payload.get("otp", "")).strip()
+    new_password = str(payload.get("new_password", ""))
+
+    if not phone_number:
+        raise ValueError("phone_number is required")
+    if not phone_number.startswith("+91") or len(phone_number) != 13:
+        raise ValueError("phone_number must use +91XXXXXXXXXX format")
+    if not otp:
+        raise ValueError("otp is required")
+    if not otp.isdigit() or len(otp) != 6:
+        raise ValueError("otp must be 6 digits")
+    if not new_password:
+        raise ValueError("new_password is required")
+    if len(new_password) < 8:
+        raise ValueError("new_password must be at least 8 characters")
+
+    return {
+        "phone_number": phone_number,
+        "otp": otp,
+        "new_password": new_password,
     }
 
 
@@ -889,6 +968,102 @@ def login():
         return jsonify({"ok": True, "token": create_token(user), "user_id": user.id, "email": user.email})
     except KeyError as exc:
         return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
+    finally:
+        db.close()
+
+
+@app.post("/auth/forgot-password")
+@limiter.limit("3 per minute")
+def forgot_password():
+    try:
+        payload = parse_forgot_password(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        user = find_user_by_phone(db, payload["phone_number"])
+        if user is None:
+            print(
+                f"Password reset requested for unknown phone {payload['phone_number']}",
+                flush=True,
+            )
+            return jsonify({
+                "ok": True,
+                "message": "If this number is registered, an OTP has been sent.",
+            })
+
+        issued_at = now_utc()
+        otp = generate_otp()
+        for existing_otp in (
+            db.query(PasswordResetOtp)
+            .filter(PasswordResetOtp.user_id == user.id, PasswordResetOtp.used_at.is_(None))
+            .all()
+        ):
+            existing_otp.used_at = issued_at
+
+        reset_otp = PasswordResetOtp(
+            id=str(uuid4()),
+            user_id=user.id,
+            phone_number=payload["phone_number"],
+            otp_hash=hash_otp(payload["phone_number"], otp),
+            expires_at=issued_at + timedelta(minutes=PASSWORD_RESET_OTP_EXPIRY_MINUTES),
+            created_at=issued_at,
+        )
+        db.add(reset_otp)
+        send_password_reset_otp(payload["phone_number"], otp)
+        db.commit()
+        return jsonify({
+            "ok": True,
+            "message": "If this number is registered, an OTP has been sent.",
+        })
+    except KeyError as exc:
+        db.rollback()
+        return jsonify({"ok": False, "error": f"missing environment variable: {exc.args[0]}"}), 500
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.post("/auth/verify-reset-otp")
+@limiter.limit("5 per minute")
+def verify_reset_otp():
+    try:
+        payload = parse_verify_reset_otp(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = SessionLocal()
+    try:
+        user = find_user_by_phone(db, payload["phone_number"])
+        if user is None:
+            return jsonify({"ok": False, "error": "invalid or expired OTP"}), 400
+
+        reset_otp = (
+            db.query(PasswordResetOtp)
+            .filter(
+                PasswordResetOtp.user_id == user.id,
+                PasswordResetOtp.phone_number == payload["phone_number"],
+                PasswordResetOtp.used_at.is_(None),
+            )
+            .order_by(PasswordResetOtp.created_at.desc())
+            .first()
+        )
+        if reset_otp is None or is_expired(reset_otp.expires_at):
+            return jsonify({"ok": False, "error": "invalid or expired OTP"}), 400
+
+        if not hmac.compare_digest(reset_otp.otp_hash, hash_otp(payload["phone_number"], payload["otp"])):
+            return jsonify({"ok": False, "error": "invalid or expired OTP"}), 400
+
+        reset_otp.used_at = now_utc()
+        user.password_hash = hash_password(payload["new_password"])
+        db.commit()
+        return jsonify({"ok": True, "message": "Password reset successful."})
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

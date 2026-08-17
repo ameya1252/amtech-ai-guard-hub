@@ -100,6 +100,8 @@ The backend also has the first mobile-app-facing APIs:
 
 - `POST /auth/signup`
 - `POST /auth/login`
+- `POST /auth/forgot-password`
+- `POST /auth/verify-reset-otp`
 - `POST /shop`
 - `GET /shop/<shop_id>`
 - `GET /me/shops`
@@ -117,6 +119,25 @@ JWT_SECRET=...
 ```
 
 Auth routes have basic rate limits.
+
+Password reset uses backend-sent SMS OTP, not the physical hub modem. Local and safe deployments default to simulated SMS:
+
+```sh
+SIMULATE_SMS=1
+```
+
+In simulation, the backend logs the OTP that would be sent. For production SMS delivery, set:
+
+```sh
+SIMULATE_SMS=0
+SMS_PROVIDER=msg91
+MSG91_AUTH_KEY=...
+MSG91_SENDER_ID=...
+PASSWORD_RESET_OTP_SECRET=...
+PASSWORD_RESET_OTP_EXPIRY_MINUTES=10
+```
+
+The MSG91 sender/template must be approved for India DLT before disabling simulation.
 
 `POST /shop` registers a shop for the authenticated user. The owner phone and email are copied from the logged-in user account, so the app should not re-submit them during onboarding:
 

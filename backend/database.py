@@ -113,6 +113,18 @@ class PushToken(Base):
     user = relationship("User", back_populates="push_tokens")
 
 
+class PasswordResetOtp(Base):
+    __tablename__ = "password_reset_otps"
+
+    id = Column(String(128), primary_key=True)
+    user_id = Column(String(128), ForeignKey("users.id"), nullable=False, index=True)
+    phone_number = Column(String(64), nullable=False, index=True)
+    otp_hash = Column(String(128), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
 class ShopDeviceSchedule(Base):
     __tablename__ = "shop_device_schedules"
 
