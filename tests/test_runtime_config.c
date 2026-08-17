@@ -554,9 +554,9 @@ static void check_config_sync_preserves_unrelated_keys(void)
         "{\"ok\":true,\"shop_id\":\"amtech-demo-shop\","
         "\"schedule\":{\"arm_hour\":21,\"arm_minute\":30,\"disarm_hour\":7,\"disarm_minute\":15},"
         "\"emergency_contacts\":["
-        "{\"slot\":1,\"name\":\"A\",\"phone\":\"+914444444444\"},"
-        "{\"slot\":2,\"name\":\"B\",\"phone\":\"+915555555555\"},"
-        "{\"slot\":3,\"name\":\"C\",\"phone\":\"+916666666666\"}]}");
+        "{\"name\":\"A\",\"phone\":\"+914444444444\",\"slot\":1},"
+        "{\"name\":\"B\",\"phone\":\"+915555555555\",\"slot\":2},"
+        "{\"name\":\"C\",\"phone\":\"+916666666666\",\"slot\":3}]}");
 
     check_int("config sync poll applies changed backend config",
               amtech_config_sync_poll(config_path, "amtech-demo-shop", &config),

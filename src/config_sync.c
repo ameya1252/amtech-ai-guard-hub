@@ -7,7 +7,7 @@
 
 #define CONFIG_SYNC_LINE_MAX 512
 #define CONFIG_SYNC_RESPONSE_MAX 8192
-#define CONFIG_SYNC_COMMAND_MAX 4096
+#define CONFIG_SYNC_COMMAND_MAX 8192
 #define CONFIG_SYNC_QUOTED_URL_MAX 2048
 #define CONFIG_SYNC_QUOTED_TOKEN_MAX 1024
 
@@ -106,7 +106,6 @@ static int parse_json_string_field_after(const char *start,
 
 static int parse_contact_phone_for_slot(const char *json, int slot, char *out, size_t out_size)
 {
-    char slot_pattern[32];
     const char *cursor;
 
     if (json == NULL || out == NULL || out_size == 0)
@@ -115,19 +114,55 @@ static int parse_contact_phone_for_slot(const char *json, int slot, char *out, s
     }
     out[0] = '\0';
 
-    snprintf(slot_pattern, sizeof(slot_pattern), "\"slot\":%d", slot);
-    cursor = strstr(json, slot_pattern);
-    if (cursor == NULL)
+    cursor = json;
+    while ((cursor = strstr(cursor, "\"slot\"")) != NULL)
     {
-        snprintf(slot_pattern, sizeof(slot_pattern), "\"slot\": %d", slot);
-        cursor = strstr(json, slot_pattern);
-    }
-    if (cursor == NULL)
-    {
-        return -1;
-    }
+        const char *colon = strchr(cursor, ':');
+        const char *object_start = cursor;
+        const char *object_end;
+        char *end = NULL;
+        char contact_object[CONFIG_SYNC_LINE_MAX];
+        long parsed_slot;
+        size_t length;
 
-    return parse_json_string_field_after(cursor, "phone", out, out_size);
+        if (colon == NULL)
+        {
+            return -1;
+        }
+
+        parsed_slot = strtol(colon + 1, &end, 10);
+        if (end == colon + 1)
+        {
+            cursor += 6;
+            continue;
+        }
+
+        while (object_start > json && *object_start != '{')
+        {
+            object_start--;
+        }
+        object_end = strchr(cursor, '}');
+        if (*object_start != '{' || object_end == NULL)
+        {
+            cursor += 6;
+            continue;
+        }
+
+        if ((int)parsed_slot == slot)
+        {
+            length = (size_t)(object_end - object_start + 1);
+            if (length >= sizeof(contact_object))
+            {
+                length = sizeof(contact_object) - 1;
+            }
+            memcpy(contact_object, object_start, length);
+            contact_object[length] = '\0';
+            return parse_json_string_field_after(contact_object, "phone", out, out_size);
+        }
+
+        cursor += 6;
+    }
+    return -1;
 }
 
 static int valid_time_parts(int hour, int minute)
@@ -482,6 +517,7 @@ static int fetch_device_config_json(const amtech_config_t *config,
 {
     char url[AMTECH_BACKEND_URL_MAX + AMTECH_SHOP_ID_MAX + 32];
     char quoted_url[CONFIG_SYNC_QUOTED_URL_MAX];
+    char quoted_header[CONFIG_SYNC_QUOTED_TOKEN_MAX];
     char quoted_token[CONFIG_SYNC_QUOTED_TOKEN_MAX];
     char command[CONFIG_SYNC_COMMAND_MAX];
     FILE *pipe;
@@ -500,10 +536,17 @@ static int fetch_device_config_json(const amtech_config_t *config,
     {
         char header[AMTECH_DEVICE_CONFIG_TOKEN_MAX + 40];
         snprintf(header, sizeof(header), "X-AMTECH-DEVICE-CONFIG-TOKEN: %s", config->device_config_token);
-        shell_quote(header, quoted_token, sizeof(quoted_token));
+        shell_quote(header, quoted_header, sizeof(quoted_header));
+        shell_quote(config->device_config_token, quoted_token, sizeof(quoted_token));
         snprintf(command,
                  sizeof(command),
-                 "curl --fail --silent --show-error --max-time 15 -H %s %s",
+                 "if command -v curl >/dev/null 2>&1; then "
+                 "curl --fail --silent --show-error --max-time 15 -H %s %s; "
+                 "elif command -v python3 >/dev/null 2>&1; then "
+                 "python3 -c 'import ssl,sys,urllib.request; token=sys.argv.__getitem__(1); url=sys.argv.__getitem__(2); req=urllib.request.Request(url, headers={\"X-AMTECH-DEVICE-CONFIG-TOKEN\": token}); ctx=ssl._create_unverified_context(); print(urllib.request.urlopen(req, timeout=15, context=ctx).read().decode(), end=\"\")' %s %s; "
+                 "else echo 'Config sync: no HTTPS client available' >&2; exit 127; fi",
+                 quoted_header,
+                 quoted_url,
                  quoted_token,
                  quoted_url);
     }
@@ -511,14 +554,19 @@ static int fetch_device_config_json(const amtech_config_t *config,
     {
         snprintf(command,
                  sizeof(command),
-                 "curl --fail --silent --show-error --max-time 15 %s",
+                 "if command -v curl >/dev/null 2>&1; then "
+                 "curl --fail --silent --show-error --max-time 15 %s; "
+                 "elif command -v python3 >/dev/null 2>&1; then "
+                 "python3 -c 'import ssl,sys,urllib.request; url=sys.argv.__getitem__(1); ctx=ssl._create_unverified_context(); print(urllib.request.urlopen(url, timeout=15, context=ctx).read().decode(), end=\"\")' %s; "
+                 "else echo 'Config sync: no HTTPS client available' >&2; exit 127; fi",
+                 quoted_url,
                  quoted_url);
     }
 
     pipe = popen(command, "r");
     if (pipe == NULL)
     {
-        printf("Config sync: failed to start curl: %s\n", strerror(errno));
+        printf("Config sync: failed to start HTTPS client: %s\n", strerror(errno));
         return -1;
     }
 
@@ -536,7 +584,7 @@ static int fetch_device_config_json(const amtech_config_t *config,
     status = pclose(pipe);
     if (status != 0)
     {
-        printf("Config sync: curl failed for %s with status %d\n", url, status);
+        printf("Config sync: HTTPS client failed for %s with status %d\n", url, status);
         return -1;
     }
 
