@@ -81,7 +81,8 @@ Backend config sync now updates only `SCHEDULE_ARM`, `SCHEDULE_DISARM`, and `ALE
 Status as of this checkpoint:
 
 - Backend source and device simulation tests are complete.
-- Live Railway endpoint verification is part of this deploy step.
+- Live Railway endpoint verification passed for owner-authenticated `GET`/`PUT`, unauthenticated rejection, and invalid schedule rejection.
+- Live Railway device-token verification is pending setting `DEVICE_CONFIG_SYNC_TOKEN` in Railway and matching `DEVICE_CONFIG_TOKEN` on the hub.
 - Real hardware polling from the Luckfox board is deferred until SSH/board access is available again.
 
 ## GPIO And Sensor Hardware
@@ -420,7 +421,7 @@ Security and infrastructure:
 - Basic rate limiting on auth routes.
 - Database keepalive thread for Railway/Neon stability.
 - R2 presigned upload URL support for future alert images/videos.
-- Device config sync endpoint for schedule and emergency contact settings. The app uses owner JWT auth; the physical hub can use the `X-AMTECH-DEVICE-CONFIG-TOKEN` shared-secret header. Backend behavior is locally tested; live Railway verification is being performed after deployment. Device-side polling is simulation-tested only until the board is reachable again.
+- Device config sync endpoint for schedule and emergency contact settings. The app uses owner JWT auth; the physical hub can use the `X-AMTECH-DEVICE-CONFIG-TOKEN` shared-secret header. Live Railway owner-auth behavior is verified. Device-token live verification is pending Railway `DEVICE_CONFIG_SYNC_TOKEN` setup. Device-side polling is simulation-tested only until the board is reachable again.
 
 Database:
 
