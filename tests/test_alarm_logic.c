@@ -1,9 +1,11 @@
 #include "alarm_logic.h"
+#include "alert_dispatch.h"
 #include "gpio_control.h"
 #include "modem_hal.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #define TEST_SIREN_GPIO_PIN 42
 #define TEST_STROBE_GPIO_PIN 48
@@ -27,6 +29,24 @@ static void expire_camera_arm_grace(void)
     alarm_logic_tick(AMTECH_CAMERA_ARM_GRACE_MS);
 }
 
+static void wait_alert_dispatch(void)
+{
+#ifdef SIMULATE_MODEM
+    check_int("alert dispatch worker becomes idle",
+              alert_dispatch_test_wait_idle(2000),
+              0);
+#endif
+}
+
+static void force_siren_timeout(void)
+{
+#ifdef SIMULATE_GPIO
+    check_int("test siren timeout helper succeeds",
+              alarm_logic_test_force_siren_timeout(),
+              0);
+#endif
+}
+
 static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
 {
 #ifdef SIMULATE_GPIO
@@ -46,12 +66,13 @@ static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
     check_int("panic first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("panic first trigger turns strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("panic first trigger sends SMS to all contacts", modem_get_simulated_sms_count(), 3);
     check_int("panic first trigger starts voice call", modem_get_simulated_call_count(), 1);
 #endif
 
-    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+    force_siren_timeout();
 #ifdef SIMULATE_GPIO
     check_int("panic first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
     check_int("panic first trigger strobe stays ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
@@ -63,6 +84,7 @@ static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
     check_int("panic second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("panic second trigger keeps strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("panic second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
@@ -72,7 +94,7 @@ static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
               1);
 #endif
 
-    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+    force_siren_timeout();
 #ifdef SIMULATE_GPIO
     check_int("panic second trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
@@ -84,6 +106,7 @@ static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
               0);
 #endif
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("panic trigger after cooldown sends SMS",
               modem_get_simulated_sms_count(),
@@ -92,6 +115,7 @@ static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
 
     alarm_logic_reset();
     alarm_logic_handle_panic(1);
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("reset clears SIM alert cooldown",
               modem_get_simulated_sms_count(),
@@ -113,13 +137,14 @@ static void check_outputs_reactivate_when_alert_dispatch_is_suppressed(void)
     alarm_logic_set_armed(0);
 
     alarm_logic_handle_panic(1);
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("regression first panic sends SIM alert",
               modem_get_simulated_sms_count(),
                3);
 #endif
 
-    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+    force_siren_timeout();
 #ifdef SIMULATE_GPIO
     check_int("regression siren is OFF before second panic",
               gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
@@ -142,6 +167,87 @@ static void check_outputs_reactivate_when_alert_dispatch_is_suppressed(void)
 #endif
 }
 
+static void check_siren_timer_independent_of_blocked_alert_dispatch(void)
+{
+#if defined(SIMULATE_GPIO) && defined(SIMULATE_MODEM)
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alert_dispatch_test_set_send_delay_ms(7000);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_shop_id("amtech-demo-shop");
+    alarm_logic_set_armed(0);
+
+    alarm_logic_handle_panic(1);
+    check_int("blocked dispatch test siren starts ON/LOW",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              0);
+
+    usleep((AMTECH_SIREN_DURATION_MS + 500U) * 1000U);
+    check_int("blocked dispatch test siren auto-stops by wall-clock thread",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              1);
+    check_int("blocked dispatch test strobe remains ON/LOW",
+              gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
+              0);
+
+    check_int("blocked dispatch eventually completes",
+              alert_dispatch_test_wait_idle(4000),
+              0);
+    alert_dispatch_test_set_send_delay_ms(0);
+    alarm_logic_reset();
+#endif
+}
+
+static void check_siren_retrigger_extends_wall_clock_deadline(void)
+{
+#if defined(SIMULATE_GPIO) && defined(SIMULATE_MODEM)
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alert_dispatch_test_set_send_delay_ms(0);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(0);
+
+    alarm_logic_handle_panic(1);
+    wait_alert_dispatch();
+    usleep(3000U * 1000U);
+    alarm_logic_handle_panic(1);
+    usleep(2500U * 1000U);
+    check_int("retrigger keeps siren ON past original 5s deadline",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              0);
+
+    usleep(3000U * 1000U);
+    check_int("retriggered siren turns OFF after extended deadline",
+              gpio_get_simulated_value(TEST_SIREN_GPIO_PIN),
+              1);
+    alarm_logic_reset();
+#endif
+}
+
+static void check_reset_cancels_pending_async_voice_escalation(void)
+{
+#if defined(SIMULATE_GPIO) && defined(SIMULATE_MODEM)
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alert_dispatch_test_set_send_delay_ms(1000);
+
+    alarm_logic_init(TEST_SIREN_GPIO_PIN);
+    alarm_logic_set_armed(0);
+
+    alarm_logic_handle_panic(1);
+    alarm_logic_reset();
+    check_int("reset cancels pending dispatch worker",
+              alert_dispatch_test_wait_idle(3000),
+              0);
+    check_int("reset canceled pending dispatch voice call",
+              modem_get_simulated_call_count(),
+              0);
+    alert_dispatch_test_set_send_delay_ms(0);
+#endif
+}
+
 static void check_shutter_retrigger(void)
 {
 #ifdef SIMULATE_GPIO
@@ -160,8 +266,9 @@ static void check_shutter_retrigger(void)
     check_int("shutter first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("shutter first trigger turns strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
+    wait_alert_dispatch();
 
-    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+    force_siren_timeout();
 #ifdef SIMULATE_GPIO
     check_int("shutter first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
     check_int("shutter first trigger strobe stays ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
@@ -172,6 +279,7 @@ static void check_shutter_retrigger(void)
     check_int("shutter second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("shutter second trigger keeps strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("shutter second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
@@ -211,8 +319,9 @@ static void check_person_retrigger(void)
 #ifdef SIMULATE_GPIO
     check_int("person first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
 #endif
+    wait_alert_dispatch();
 
-    alarm_logic_tick(AMTECH_SIREN_DURATION_MS + 1);
+    force_siren_timeout();
 #ifdef SIMULATE_GPIO
     check_int("person first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
@@ -226,6 +335,7 @@ static void check_person_retrigger(void)
               gpio_get_simulated_value(TEST_STROBE_GPIO_PIN),
               0);
 #endif
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("person second trigger inside cooldown suppresses SMS",
               modem_get_simulated_sms_count(),
@@ -256,6 +366,7 @@ static void check_camera_sources_confirm_independently(void)
     check_int("second front frame triggers front intrusion",
               alarm_logic_is_triggered(),
               1);
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("front camera source sends SMS fan-out",
               modem_get_simulated_sms_count(),
@@ -283,6 +394,7 @@ static void check_camera_sources_confirm_independently(void)
     check_int("second parking frame triggers parking intrusion",
               alarm_logic_is_triggered(),
               1);
+    wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("parking camera source message selected",
               strcmp(modem_get_simulated_last_sms_message(),
@@ -329,6 +441,7 @@ static void check_camera_arm_grace_period(void)
     check_int("second camera frame after grace triggers",
               alarm_logic_is_triggered(),
               1);
+    wait_alert_dispatch();
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
@@ -336,6 +449,7 @@ static void check_camera_arm_grace_period(void)
     check_int("shutter still triggers during camera grace",
               alarm_logic_is_triggered(),
               1);
+    wait_alert_dispatch();
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
@@ -343,6 +457,7 @@ static void check_camera_arm_grace_period(void)
     check_int("panic still triggers during camera grace",
               alarm_logic_is_triggered(),
               1);
+    wait_alert_dispatch();
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
@@ -350,6 +465,7 @@ static void check_camera_arm_grace_period(void)
     check_int("smoke still triggers during camera grace",
               alarm_logic_is_triggered(),
               1);
+    wait_alert_dispatch();
 }
 
 static void check_smoke_triggers_regardless_of_armed_state(void)
@@ -364,12 +480,14 @@ static void check_smoke_triggers_regardless_of_armed_state(void)
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(0);
     alarm_logic_handle_smoke(1);
+    wait_alert_dispatch();
 
     check_int("smoke detector while disarmed triggers immediately", alarm_logic_is_triggered(), 1);
 
     alarm_logic_init(TEST_SIREN_GPIO_PIN);
     alarm_logic_set_armed(1);
     alarm_logic_handle_smoke(1);
+    wait_alert_dispatch();
 
     check_int("smoke detector while armed triggers immediately", alarm_logic_is_triggered(), 1);
 }
@@ -387,6 +505,7 @@ static void check_call_state_ticks_without_blocking_alarm_flow(void)
     alarm_logic_set_armed(0);
 
     alarm_logic_handle_smoke(1);
+    wait_alert_dispatch();
     check_int("smoke starts non-blocking voice call", modem_voice_call_is_active(), 1);
 
     alarm_logic_handle_panic(1);
@@ -455,7 +574,7 @@ int main(void)
     check_int("strobe remains ON/LOW before siren timeout", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
 
-    alarm_logic_tick(2);
+    force_siren_timeout();
 
     check_int("alarm remains triggered after siren timeout", alarm_logic_is_triggered(), 1);
 #ifdef SIMULATE_GPIO
@@ -554,6 +673,9 @@ int main(void)
 
     check_panic_retrigger_and_alert_dispatch_cooldown();
     check_outputs_reactivate_when_alert_dispatch_is_suppressed();
+    check_siren_timer_independent_of_blocked_alert_dispatch();
+    check_siren_retrigger_extends_wall_clock_deadline();
+    check_reset_cancels_pending_async_voice_escalation();
     check_shutter_retrigger();
     check_person_retrigger();
     check_camera_sources_confirm_independently();

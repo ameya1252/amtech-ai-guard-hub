@@ -35,6 +35,10 @@ void alarm_logic_end_frame(void);
 void alarm_logic_end_frame_source(const char *event_type);
 void trigger_alarm(void);
 
+#ifdef SIMULATE_GPIO
+int alarm_logic_test_force_siren_timeout(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

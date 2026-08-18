@@ -1,4 +1,5 @@
 #include "alarm_logic.h"
+#include "amtech_log.h"
 #include "camera_detection.h"
 #include "config.h"
 #include "config_sync.h"
@@ -1190,6 +1191,18 @@ static int sms_sender_is_authorized(const amtech_config_t *config, const char *s
     return 0;
 }
 
+static int send_sms_command_reply(const char *sender, const char *command, const char *message)
+{
+    if (modem_send_sms(sender, message) == 0)
+    {
+        amtech_logf("Runtime", "SMS %s reply sent to %s", command, sender);
+        return 0;
+    }
+
+    amtech_logf("Runtime", "SMS %s command applied, but reply FAILED to %s", command, sender);
+    return -1;
+}
+
 static int process_sms_remote_command(const amtech_config_t *config, const modem_incoming_sms_t *sms)
 {
     char command[MODEM_SMS_TEXT_MAX];
@@ -1214,14 +1227,14 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         if (alarm_logic_is_armed())
         {
             runtime_set_manual_armed(1, config);
-            modem_send_sms(sms->sender, "System already ARMED");
-            printf("Runtime: accepted redundant SMS ARM command from %s\n", sms->sender);
+            send_sms_command_reply(sms->sender, "ARM", "System already ARMED");
+            amtech_logf("Runtime", "processed redundant SMS ARM command from %s", sms->sender);
             return 1;
         }
 
         runtime_set_manual_armed(1, config);
-        modem_send_sms(sms->sender, "System ARMING...");
-        printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, "ARM", "System ARMING...");
+        amtech_logf("Runtime", "processed SMS ARM command from %s", sms->sender);
         return 1;
     }
 
@@ -1230,14 +1243,14 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         if (!alarm_logic_is_armed())
         {
             runtime_set_manual_armed(0, config);
-            modem_send_sms(sms->sender, "System already DISARMED");
-            printf("Runtime: accepted redundant SMS DISARM command from %s\n", sms->sender);
+            send_sms_command_reply(sms->sender, "DISARM", "System already DISARMED");
+            amtech_logf("Runtime", "processed redundant SMS DISARM command from %s", sms->sender);
             return 1;
         }
 
         runtime_set_manual_armed(0, config);
-        modem_send_sms(sms->sender, "System DISARMED");
-        printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, "DISARM", "System DISARMED");
+        amtech_logf("Runtime", "processed SMS DISARM command from %s", sms->sender);
         return 1;
     }
 
@@ -1245,15 +1258,15 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     {
         if (!alarm_logic_is_triggered())
         {
-            modem_send_sms(sms->sender, "No active alarm");
-            printf("Runtime: accepted SMS STOP command from %s with no active alarm\n", sms->sender);
+            send_sms_command_reply(sms->sender, "STOP", "No active alarm");
+            amtech_logf("Runtime", "processed SMS STOP command from %s with no active alarm", sms->sender);
             return 1;
         }
 
         alarm_logic_reset();
         runtime_set_manual_armed(0, config);
-        modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
-        printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, "STOP", "Alarm stopped, system DISARMED");
+        amtech_logf("Runtime", "processed SMS STOP command from %s", sms->sender);
         return 1;
     }
 
@@ -1262,8 +1275,8 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         char reply[AMTECH_SMS_REPLY_MAX];
 
         runtime_build_status_message(config, reply, sizeof(reply));
-        modem_send_sms(sms->sender, reply);
-        printf("Runtime: accepted SMS STATUS command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, command, reply);
+        amtech_logf("Runtime", "processed SMS STATUS command from %s", sms->sender);
         return 1;
     }
 
@@ -1272,8 +1285,8 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         char reply[AMTECH_SMS_REPLY_MAX];
 
         runtime_build_help_message(reply, sizeof(reply));
-        modem_send_sms(sms->sender, reply);
-        printf("Runtime: accepted SMS HELP command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, command, reply);
+        amtech_logf("Runtime", "processed SMS HELP command from %s", sms->sender);
         return 1;
     }
 
@@ -1599,6 +1612,18 @@ static int sms_sender_is_authorized(const amtech_config_t *config, const char *s
     return 0;
 }
 
+static int send_sms_command_reply(const char *sender, const char *command, const char *message)
+{
+    if (modem_send_sms(sender, message) == 0)
+    {
+        amtech_logf("Runtime", "SMS %s reply sent to %s", command, sender);
+        return 0;
+    }
+
+    amtech_logf("Runtime", "SMS %s command applied, but reply FAILED to %s", command, sender);
+    return -1;
+}
+
 static int process_sms_remote_command(const amtech_config_t *config, const modem_incoming_sms_t *sms)
 {
     char command[MODEM_SMS_TEXT_MAX];
@@ -1623,14 +1648,14 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         if (alarm_logic_is_armed())
         {
             runtime_set_manual_armed(1, config);
-            modem_send_sms(sms->sender, "System already ARMED");
-            printf("Runtime: accepted redundant SMS ARM command from %s\n", sms->sender);
+            send_sms_command_reply(sms->sender, "ARM", "System already ARMED");
+            amtech_logf("Runtime", "processed redundant SMS ARM command from %s", sms->sender);
             return 1;
         }
 
         runtime_set_manual_armed(1, config);
-        modem_send_sms(sms->sender, "System ARMING...");
-        printf("Runtime: accepted SMS ARM command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, "ARM", "System ARMING...");
+        amtech_logf("Runtime", "processed SMS ARM command from %s", sms->sender);
         return 1;
     }
 
@@ -1639,14 +1664,14 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         if (!alarm_logic_is_armed())
         {
             runtime_set_manual_armed(0, config);
-            modem_send_sms(sms->sender, "System already DISARMED");
-            printf("Runtime: accepted redundant SMS DISARM command from %s\n", sms->sender);
+            send_sms_command_reply(sms->sender, "DISARM", "System already DISARMED");
+            amtech_logf("Runtime", "processed redundant SMS DISARM command from %s", sms->sender);
             return 1;
         }
 
         runtime_set_manual_armed(0, config);
-        modem_send_sms(sms->sender, "System DISARMED");
-        printf("Runtime: accepted SMS DISARM command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, "DISARM", "System DISARMED");
+        amtech_logf("Runtime", "processed SMS DISARM command from %s", sms->sender);
         return 1;
     }
 
@@ -1654,15 +1679,15 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     {
         if (!alarm_logic_is_triggered())
         {
-            modem_send_sms(sms->sender, "No active alarm");
-            printf("Runtime: accepted SMS STOP command from %s with no active alarm\n", sms->sender);
+            send_sms_command_reply(sms->sender, "STOP", "No active alarm");
+            amtech_logf("Runtime", "processed SMS STOP command from %s with no active alarm", sms->sender);
             return 1;
         }
 
         alarm_logic_reset();
         runtime_set_manual_armed(0, config);
-        modem_send_sms(sms->sender, "Alarm stopped, system DISARMED");
-        printf("Runtime: accepted SMS STOP command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, "STOP", "Alarm stopped, system DISARMED");
+        amtech_logf("Runtime", "processed SMS STOP command from %s", sms->sender);
         return 1;
     }
 
@@ -1671,8 +1696,8 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         char reply[AMTECH_SMS_REPLY_MAX];
 
         runtime_build_status_message(config, reply, sizeof(reply));
-        modem_send_sms(sms->sender, reply);
-        printf("Runtime: accepted SMS STATUS command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, command, reply);
+        amtech_logf("Runtime", "processed SMS STATUS command from %s", sms->sender);
         return 1;
     }
 
@@ -1681,8 +1706,8 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
         char reply[AMTECH_SMS_REPLY_MAX];
 
         runtime_build_help_message(reply, sizeof(reply));
-        modem_send_sms(sms->sender, reply);
-        printf("Runtime: accepted SMS HELP command from %s\n", sms->sender);
+        send_sms_command_reply(sms->sender, command, reply);
+        amtech_logf("Runtime", "processed SMS HELP command from %s", sms->sender);
         return 1;
     }
 

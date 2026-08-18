@@ -50,6 +50,9 @@ static int simulated_status_sequence_index = 0;
 static int simulated_call_start_results[MODEM_HAL_SIMULATED_HISTORY_MAX];
 static int simulated_call_start_result_count = 0;
 static int simulated_call_start_result_index = 0;
+static int simulated_sms_send_results[MODEM_HAL_SIMULATED_HISTORY_MAX];
+static int simulated_sms_send_result_count = 0;
+static int simulated_sms_send_result_index = 0;
 static modem_incoming_sms_t simulated_inbox[MODEM_HAL_SIMULATED_INBOX_MAX];
 static int simulated_inbox_count = 0;
 static int simulated_next_sms_index = 1;
@@ -569,7 +572,20 @@ int modem_send_sms(const char *number, const char *message)
     }
 
 #ifdef SIMULATE_MODEM
+    int simulated_result = 0;
+
     pthread_mutex_lock(&modem_hal_mutex);
+    if (simulated_sms_send_result_index < simulated_sms_send_result_count)
+    {
+        simulated_result = simulated_sms_send_results[simulated_sms_send_result_index++];
+    }
+    if (simulated_result != 0)
+    {
+        printf("Modem HAL: simulated SMS send failed to %s: %s\n", number, message);
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return -1;
+    }
+
     printf("Modem HAL: would send SMS to %s: %s\n", number, message);
     snprintf(simulated_last_sms_number, sizeof(simulated_last_sms_number), "%s", number);
     snprintf(simulated_last_sms_message, sizeof(simulated_last_sms_message), "%s", message);
@@ -969,6 +985,30 @@ void modem_set_simulated_call_start_results(const int *results, int count)
     simulated_call_start_result_count = count;
 }
 
+void modem_set_simulated_sms_send_results(const int *results, int count)
+{
+    int i;
+
+    simulated_sms_send_result_count = 0;
+    simulated_sms_send_result_index = 0;
+
+    if (results == NULL || count <= 0)
+    {
+        return;
+    }
+
+    if (count > MODEM_HAL_SIMULATED_HISTORY_MAX)
+    {
+        count = MODEM_HAL_SIMULATED_HISTORY_MAX;
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        simulated_sms_send_results[i] = results[i];
+    }
+    simulated_sms_send_result_count = count;
+}
+
 void modem_simulate_incoming_sms(const char *sender, const char *text)
 {
     modem_incoming_sms_t *sms;
@@ -1014,19 +1054,19 @@ void modem_reset_simulated_state(void)
     {
         simulated_sms_numbers[i][0] = '\0';
         simulated_call_numbers[i][0] = '\0';
+        simulated_sms_send_results[i] = 0;
+        simulated_call_start_results[i] = 0;
     }
     simulated_status_sequence_count = 0;
     simulated_status_sequence_index = 0;
     simulated_call_start_result_count = 0;
     simulated_call_start_result_index = 0;
+    simulated_sms_send_result_count = 0;
+    simulated_sms_send_result_index = 0;
     simulated_inbox_count = 0;
     simulated_next_sms_index = 1;
     simulated_deleted_sms_count = 0;
     simulated_sms_receive_init_count = 0;
-    for (i = 0; i < MODEM_HAL_SIMULATED_HISTORY_MAX; i++)
-    {
-        simulated_call_start_results[i] = 0;
-    }
     for (i = 0; i < MODEM_HAL_SIMULATED_INBOX_MAX; i++)
     {
         simulated_inbox[i].index = 0;

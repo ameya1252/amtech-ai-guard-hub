@@ -1,5 +1,6 @@
 #include "config.h"
 #include "alarm_logic.h"
+#include "alert_dispatch.h"
 #include "config_sync.h"
 #include "device_command_sync.h"
 #include "gpio_control.h"
@@ -405,6 +406,59 @@ static void check_sms_remote_control(void)
     check_int("DISARM clears armed while call active", alarm_logic_is_armed(), 0);
     check_int("DISARM reply sent while call active", modem_get_simulated_sms_count(), sms_count_after_trigger + 6);
     modem_hangup_voice_call();
+}
+
+static void check_sms_reply_failures_are_not_reported_as_sent(void)
+{
+    amtech_config_t config;
+    int fail_once[1] = {-1};
+
+    amtech_config_set_defaults(&config);
+    snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+
+    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_simulate_incoming_sms("+911111111111", "ARM");
+    check_int("ARM command still applies when reply SMS fails",
+              runtime_poll_sms_remote_control(&config),
+              1);
+    check_int("ARM command armed despite reply failure", alarm_logic_is_armed(), 1);
+    check_int("ARM failed reply is not counted as sent", modem_get_simulated_sms_count(), 0);
+    check_int("ARM failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 1);
+
+    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_simulate_incoming_sms("+911111111111", "DISARM");
+    check_int("DISARM command still applies when reply SMS fails",
+              runtime_poll_sms_remote_control(&config),
+              1);
+    check_int("DISARM command disarmed despite reply failure", alarm_logic_is_armed(), 0);
+    check_int("DISARM failed reply is not counted as sent", modem_get_simulated_sms_count(), 0);
+    check_int("DISARM failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 2);
+
+    alarm_logic_handle_panic(1);
+    check_int("STOP failure setup alarm triggered", alarm_logic_is_triggered(), 1);
+    check_int("STOP failure setup alert dispatch completed",
+              alert_dispatch_test_wait_idle(2000),
+              0);
+    modem_reset_simulated_state();
+    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_simulate_incoming_sms("+911111111111", "STOP");
+    check_int("STOP command still applies when reply SMS fails",
+              runtime_poll_sms_remote_control(&config),
+              1);
+    check_int("STOP command reset alarm despite reply failure", alarm_logic_is_triggered(), 0);
+    check_int("STOP failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 1);
+
+    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_simulate_incoming_sms("+911111111111", "STATUS");
+    check_int("STATUS command still processed when reply SMS fails",
+              runtime_poll_sms_remote_control(&config),
+              1);
+    check_int("STATUS failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 2);
 }
 
 static void check_sms_manual_override_blocks_schedule_until_boundary(void)
@@ -857,6 +911,7 @@ int main(void)
     check_panic_active_high();
     check_sensor_confirmation_logic();
     check_sms_remote_control();
+    check_sms_reply_failures_are_not_reported_as_sent();
     check_sms_manual_override_blocks_schedule_until_boundary();
     check_app_command_manual_override_blocks_schedule_until_boundary();
     check_camera_monitoring_active_sms();

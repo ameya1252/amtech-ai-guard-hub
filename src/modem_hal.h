@@ -56,6 +56,7 @@ const char *modem_get_simulated_last_sms_message(void);
 const char *modem_get_simulated_last_call_number(void);
 void modem_set_simulated_call_status_sequence(const modem_call_status_t *statuses, int count);
 void modem_set_simulated_call_start_results(const int *results, int count);
+void modem_set_simulated_sms_send_results(const int *results, int count);
 void modem_simulate_incoming_sms(const char *sender, const char *text);
 int modem_get_simulated_deleted_sms_count(void);
 int modem_get_simulated_sms_receive_init_count(void);
