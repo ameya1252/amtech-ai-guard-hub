@@ -555,6 +555,104 @@ static void check_app_command_manual_override_blocks_schedule_until_boundary(voi
     check_int("normal schedule arms after app DISARM override cleared", alarm_logic_is_armed(), 1);
 }
 
+static void check_persisted_armed_state_survives_restart_until_schedule_boundary(void)
+{
+    amtech_config_t config;
+    const char *state_path = "/tmp/amtech_runtime_state_test.txt";
+    char contents[256];
+    FILE *fp;
+    size_t bytes_read;
+
+    amtech_config_set_defaults(&config);
+    remove(state_path);
+    setenv("AMTECH_STATE_PATH", state_path, 1);
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_disable_state_persistence();
+    runtime_test_set_armed(0);
+    runtime_test_enable_state_persistence();
+
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_ARM, &config);
+    check_int("persisted state app ARM sets armed", alarm_logic_is_armed(), 1);
+
+    fp = fopen(state_path, "r");
+    if (fp == NULL)
+    {
+        printf("FAIL: could not read persisted runtime state file\n");
+        failures++;
+        runtime_test_disable_state_persistence();
+        unsetenv("AMTECH_STATE_PATH");
+        return;
+    }
+    bytes_read = fread(contents, 1, sizeof(contents) - 1, fp);
+    contents[bytes_read] = '\0';
+    fclose(fp);
+    check_contains("persisted state records armed", contents, "ARMED=1");
+    check_contains("persisted state records manual control", contents, "CONTROL=MANUAL");
+
+    runtime_test_disable_state_persistence();
+    runtime_test_set_armed(0);
+    check_int("simulated restart starts from disarmed memory state", alarm_logic_is_armed(), 0);
+    runtime_test_enable_state_persistence();
+    check_int("restore persisted runtime state", runtime_test_restore_persisted_state(&config), 0);
+    check_int("restore persisted ARM after restart", alarm_logic_is_armed(), 1);
+
+    runtime_test_apply_schedule_armed(0);
+    check_int("restored ARM not disarmed by first schedule-disarmed tick", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(0);
+    check_int("restored ARM not disarmed by repeated schedule-disarmed tick", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(1);
+    check_int("restored ARM override clears at schedule arm boundary", alarm_logic_is_armed(), 1);
+    runtime_test_apply_schedule_armed(0);
+    check_int("schedule can disarm after restored override boundary", alarm_logic_is_armed(), 0);
+
+    runtime_test_disable_state_persistence();
+    remove(state_path);
+    unsetenv("AMTECH_STATE_PATH");
+}
+
+static void check_persisted_disarmed_state_survives_restart_until_schedule_boundary(void)
+{
+    amtech_config_t config;
+    const char *state_path = "/tmp/amtech_runtime_state_test.txt";
+
+    amtech_config_set_defaults(&config);
+    remove(state_path);
+    setenv("AMTECH_STATE_PATH", state_path, 1);
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_disable_state_persistence();
+    runtime_test_set_armed(1);
+    runtime_test_enable_state_persistence();
+
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_DISARM, &config);
+    check_int("persisted state app DISARM clears armed", alarm_logic_is_armed(), 0);
+
+    runtime_test_disable_state_persistence();
+    runtime_test_set_armed(1);
+    check_int("simulated restart starts from armed memory state", alarm_logic_is_armed(), 1);
+    runtime_test_enable_state_persistence();
+    check_int("restore persisted DISARM runtime state", runtime_test_restore_persisted_state(&config), 0);
+    check_int("restore persisted DISARM after restart", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("restored DISARM not re-armed by first schedule-armed tick", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("restored DISARM not re-armed by repeated schedule-armed tick", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(0);
+    check_int("restored DISARM override clears at schedule disarm boundary", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("schedule can arm after restored override boundary", alarm_logic_is_armed(), 1);
+
+    runtime_test_disable_state_persistence();
+    remove(state_path);
+    unsetenv("AMTECH_STATE_PATH");
+}
+
 static void check_device_command_sync_parser_and_ack(void)
 {
     amtech_config_t config;
@@ -914,6 +1012,8 @@ int main(void)
     check_sms_reply_failures_are_not_reported_as_sent();
     check_sms_manual_override_blocks_schedule_until_boundary();
     check_app_command_manual_override_blocks_schedule_until_boundary();
+    check_persisted_armed_state_survives_restart_until_schedule_boundary();
+    check_persisted_disarmed_state_survives_restart_until_schedule_boundary();
     check_camera_monitoring_active_sms();
     check_device_command_sync_parser_and_ack();
     check_config_sync_preserves_unrelated_keys();

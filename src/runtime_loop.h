@@ -57,6 +57,9 @@ int runtime_test_static_calibration_active(void);
 void runtime_test_note_camera_health(const char *source, int success);
 int runtime_test_camera_detection_should_run(void);
 void runtime_test_run_simulated_camera_once(const amtech_config_t *config);
+void runtime_test_enable_state_persistence(void);
+void runtime_test_disable_state_persistence(void);
+int runtime_test_restore_persisted_state(const amtech_config_t *config);
 #endif
 
 #ifdef __cplusplus

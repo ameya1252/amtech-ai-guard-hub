@@ -44,12 +44,21 @@
 #define AMTECH_STATIC_ZONE_MAX_PER_CAMERA 8
 #define AMTECH_SMS_REPLY_MAX 256
 #define AMTECH_CAMERA_MONITORING_ACTIVE_SMS "System ARMED"
+#define AMTECH_DEFAULT_STATE_PATH "/root/amtech_state.txt"
+#define AMTECH_STATE_LINE_MAX 128
 
 typedef enum
 {
     RUNTIME_ARM_CONTROL_SCHEDULE = 0,
     RUNTIME_ARM_CONTROL_MANUAL
 } runtime_arm_control_t;
+
+typedef struct
+{
+    int valid;
+    int armed;
+    runtime_arm_control_t control;
+} runtime_persisted_state_t;
 
 typedef enum
 {
@@ -163,6 +172,12 @@ static int runtime_observed_armed = 0;
 static runtime_arm_control_t runtime_arm_control = RUNTIME_ARM_CONTROL_SCHEDULE;
 static int runtime_last_schedule_known = 0;
 static int runtime_last_schedule_armed = 0;
+static int runtime_state_persistence_enabled = 0;
+static int runtime_last_persisted_known = 0;
+static int runtime_last_persisted_armed = 0;
+static runtime_arm_control_t runtime_last_persisted_control = RUNTIME_ARM_CONTROL_SCHEDULE;
+
+static void runtime_set_armed(int next_armed, const amtech_config_t *config);
 static int runtime_calibration_completion_sms_pending = 0;
 static char runtime_calibration_completion_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
 
@@ -444,6 +459,183 @@ static const char *runtime_config_path(void)
     return AMTECH_DEFAULT_CONFIG_PATH;
 }
 
+static const char *runtime_state_path(void)
+{
+    const char *path = getenv("AMTECH_STATE_PATH");
+
+    if (path != NULL && path[0] != '\0')
+    {
+        return path;
+    }
+
+    return AMTECH_DEFAULT_STATE_PATH;
+}
+
+static const char *runtime_arm_control_to_text(runtime_arm_control_t control)
+{
+    return control == RUNTIME_ARM_CONTROL_MANUAL ? "MANUAL" : "SCHEDULE";
+}
+
+static runtime_arm_control_t runtime_arm_control_from_text(const char *text)
+{
+    if (text != NULL && strcmp(text, "MANUAL") == 0)
+    {
+        return RUNTIME_ARM_CONTROL_MANUAL;
+    }
+
+    return RUNTIME_ARM_CONTROL_SCHEDULE;
+}
+
+static int runtime_read_persisted_state(runtime_persisted_state_t *state)
+{
+    char line[AMTECH_STATE_LINE_MAX];
+    FILE *fp;
+
+    if (state == NULL)
+    {
+        return -1;
+    }
+
+    state->valid = 0;
+    state->armed = 0;
+    state->control = RUNTIME_ARM_CONTROL_SCHEDULE;
+
+    fp = fopen(runtime_state_path(), "r");
+    if (fp == NULL)
+    {
+        if (errno != ENOENT)
+        {
+            printf("Runtime: warning: failed to read state file %s: %s\n",
+                   runtime_state_path(),
+                   strerror(errno));
+        }
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL)
+    {
+        char *key;
+        char *value;
+        char *separator;
+
+        key = line;
+        while (*key == ' ' || *key == '\t' || *key == '\r' || *key == '\n')
+        {
+            key++;
+        }
+
+        if (key[0] == '\0' || key[0] == '#')
+        {
+            continue;
+        }
+
+        separator = strchr(key, '=');
+        if (separator == NULL)
+        {
+            continue;
+        }
+
+        *separator = '\0';
+        value = separator + 1;
+        value[strcspn(value, "\r\n")] = '\0';
+
+        if (strcmp(key, "ARMED") == 0)
+        {
+            state->armed = atoi(value) ? 1 : 0;
+            state->valid = 1;
+        }
+        else if (strcmp(key, "CONTROL") == 0)
+        {
+            state->control = runtime_arm_control_from_text(value);
+        }
+    }
+
+    fclose(fp);
+    return state->valid ? 0 : -1;
+}
+
+static int runtime_persist_armed_state(int armed, runtime_arm_control_t control)
+{
+    char temp_path[256];
+    FILE *fp;
+
+    if (!runtime_state_persistence_enabled)
+    {
+        return 0;
+    }
+
+    armed = armed ? 1 : 0;
+    if (runtime_last_persisted_known &&
+        runtime_last_persisted_armed == armed &&
+        runtime_last_persisted_control == control)
+    {
+        return 0;
+    }
+
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", runtime_state_path());
+    fp = fopen(temp_path, "w");
+    if (fp == NULL)
+    {
+        printf("Runtime: warning: failed to write state file %s: %s\n",
+               temp_path,
+               strerror(errno));
+        return -1;
+    }
+
+    fprintf(fp, "ARMED=%d\n", armed);
+    fprintf(fp, "CONTROL=%s\n", runtime_arm_control_to_text(control));
+
+    if (fclose(fp) != 0)
+    {
+        printf("Runtime: warning: failed to close state file %s: %s\n",
+               temp_path,
+               strerror(errno));
+        return -1;
+    }
+
+    if (rename(temp_path, runtime_state_path()) != 0)
+    {
+        printf("Runtime: warning: failed to replace state file %s: %s\n",
+               runtime_state_path(),
+               strerror(errno));
+        return -1;
+    }
+
+    runtime_last_persisted_known = 1;
+    runtime_last_persisted_armed = armed;
+    runtime_last_persisted_control = control;
+    printf("Runtime: persisted state ARMED=%d CONTROL=%s\n",
+           armed,
+           runtime_arm_control_to_text(control));
+    return 0;
+}
+
+static int runtime_restore_persisted_state(const amtech_config_t *config)
+{
+    runtime_persisted_state_t state;
+
+    if (runtime_read_persisted_state(&state) != 0)
+    {
+        return -1;
+    }
+
+    /*
+     * Power-loss recovery is fail-safe: restore the last known status and hold
+     * it as a manual override until the next natural schedule boundary. This
+     * prevents a reboot outside the armed window from silently changing ARMED
+     * to DISARMED immediately after startup.
+     */
+    runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
+    runtime_last_persisted_known = 1;
+    runtime_last_persisted_armed = state.armed;
+    runtime_last_persisted_control = state.control;
+    runtime_set_armed(state.armed, config);
+    printf("Runtime: restored persisted state ARMED=%d previous CONTROL=%s; holding until next schedule boundary\n",
+           state.armed,
+           runtime_arm_control_to_text(state.control));
+    return 0;
+}
+
 static void runtime_static_calibration_clear(void)
 {
     memset(static_camera_states, 0, sizeof(static_camera_states));
@@ -569,6 +761,7 @@ static void runtime_set_armed(int next_armed, const amtech_config_t *config)
 {
     alarm_logic_set_armed(next_armed);
     runtime_note_armed_state(config);
+    runtime_persist_armed_state(alarm_logic_is_armed(), runtime_arm_control);
 }
 
 static void runtime_apply_schedule_armed(int scheduled_armed, const amtech_config_t *config)
@@ -1030,6 +1223,7 @@ void runtime_test_set_armed(int armed)
     runtime_arm_control = RUNTIME_ARM_CONTROL_SCHEDULE;
     runtime_last_schedule_known = 0;
     runtime_last_schedule_armed = 0;
+    runtime_last_persisted_known = 0;
     runtime_set_armed(armed, NULL);
 }
 
@@ -1074,6 +1268,25 @@ void runtime_test_note_camera_health(const char *source, int success)
 int runtime_test_camera_detection_should_run(void)
 {
     return runtime_camera_detection_should_run();
+}
+
+void runtime_test_enable_state_persistence(void)
+{
+    runtime_state_persistence_enabled = 1;
+    runtime_last_persisted_known = 0;
+}
+
+void runtime_test_disable_state_persistence(void)
+{
+    runtime_state_persistence_enabled = 0;
+    runtime_last_persisted_known = 0;
+}
+
+int runtime_test_restore_persisted_state(const amtech_config_t *config)
+{
+    runtime_last_schedule_known = 0;
+    runtime_last_schedule_armed = 0;
+    return runtime_restore_persisted_state(config);
 }
 #endif
 
@@ -2513,6 +2726,7 @@ int main(int argc, char **argv)
 
     alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
     alarm_logic_set_shop_id(config.shop_id);
+    runtime_state_persistence_enabled = 1;
     if (force_armed)
     {
         /*
@@ -2520,9 +2734,10 @@ int main(int argc, char **argv)
          * in production because it deliberately bypasses the real arm schedule.
          */
         print_force_armed_warning();
+        runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
         runtime_set_armed(1, &config);
     }
-    else
+    else if (runtime_restore_persisted_state(&config) != 0)
     {
         runtime_set_armed(0, &config);
     }
