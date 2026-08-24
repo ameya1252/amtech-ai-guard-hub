@@ -1,6 +1,7 @@
 #include "modem_hal.h"
 
 #include "config.h"
+#include "gpio_control.h"
 #include "modem_state.h"
 #include "sim_modem.h"
 
@@ -9,8 +10,10 @@
 
 #include <pthread.h>
 
-#ifndef SIMULATE_MODEM
 #include <errno.h>
+#include <time.h>
+
+#ifndef SIMULATE_MODEM
 #include <fcntl.h>
 #include <poll.h>
 #include <termios.h>
@@ -28,12 +31,24 @@
 #define MODEM_HAL_SMS_TIMEOUT_MS 60000
 #define MODEM_HAL_CALL_MAX_DURATION_MS 45000U
 #define MODEM_HAL_CALL_STATUS_POLL_MS 1000U
+#define MODEM_HAL_RESET_GPIO_PIN 57
+#define MODEM_HAL_RESET_PULSE_MS 2500U
+#define MODEM_HAL_RESET_BOOT_READY_TIMEOUT_MS 30000
+#define MODEM_HAL_RESET_AT_POLL_MS 1000
+#define MODEM_HAL_RESET_AT_OK_REQUIRED 2
+#define MODEM_HAL_RESET_FAILURE_THRESHOLD 3
+#define MODEM_HAL_RESET_COOLDOWN_MS 300000U
 
 static pthread_mutex_t modem_hal_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int voice_call_active = 0;
 static unsigned int voice_call_elapsed_ms = 0;
 static unsigned int voice_call_status_elapsed_ms = 0;
 static modem_call_status_t voice_call_status = MODEM_CALL_STATUS_IDLE;
+static int sms_tx_fault_active = 0;
+static int reset_control_initialized = 0;
+static int consecutive_modem_failures = 0;
+static int reset_pending_after_call = 0;
+static unsigned int reset_cooldown_elapsed_ms = MODEM_HAL_RESET_COOLDOWN_MS;
 
 #ifdef SIMULATE_MODEM
 static int simulated_sms_count = 0;
@@ -53,34 +68,260 @@ static int simulated_call_start_result_index = 0;
 static int simulated_sms_send_results[MODEM_HAL_SIMULATED_HISTORY_MAX];
 static int simulated_sms_send_result_count = 0;
 static int simulated_sms_send_result_index = 0;
+static unsigned int simulated_sms_send_delay_ms = 0;
+static int simulated_sms_attempt_count = 0;
 static modem_incoming_sms_t simulated_inbox[MODEM_HAL_SIMULATED_INBOX_MAX];
 static int simulated_inbox_count = 0;
 static int simulated_next_sms_index = 1;
 static int simulated_deleted_sms_count = 0;
 static int simulated_sms_receive_init_count = 0;
+static int simulated_hard_reset_count = 0;
+
+static void simulated_sleep_ms(unsigned int delay_ms)
+{
+    struct timespec ts;
+
+    ts.tv_sec = delay_ms / 1000U;
+    ts.tv_nsec = (long)(delay_ms % 1000U) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
+    {
+    }
+}
 #endif
+
+static void modem_hal_sleep_ms(unsigned int delay_ms)
+{
+#ifdef SIMULATE_MODEM
+    (void)delay_ms;
+#else
+    usleep(delay_ms * 1000U);
+#endif
+}
+
+static int modem_hard_reset_locked(const char *reason);
+
+static void modem_note_success_locked(void)
+{
+    consecutive_modem_failures = 0;
+    reset_pending_after_call = 0;
+}
+
+static void modem_note_failure_locked(const char *reason)
+{
+    consecutive_modem_failures++;
+    printf("Modem HAL: modem failure %d/%d reason=%s\n",
+           consecutive_modem_failures,
+           MODEM_HAL_RESET_FAILURE_THRESHOLD,
+           reason != NULL ? reason : "unknown");
+
+    if (consecutive_modem_failures < MODEM_HAL_RESET_FAILURE_THRESHOLD)
+    {
+        return;
+    }
+
+    if (reset_cooldown_elapsed_ms < MODEM_HAL_RESET_COOLDOWN_MS)
+    {
+        printf("Modem HAL: hard reset suppressed by cooldown reason=%s elapsed=%u/%u ms\n",
+               reason != NULL ? reason : "unknown",
+               reset_cooldown_elapsed_ms,
+               MODEM_HAL_RESET_COOLDOWN_MS);
+        return;
+    }
+
+    if (voice_call_active)
+    {
+        reset_pending_after_call = 1;
+        printf("Modem HAL: hard reset deferred until voice call ends reason=%s\n",
+               reason != NULL ? reason : "unknown");
+        return;
+    }
+
+    if (modem_hard_reset_locked(reason) == 0)
+    {
+        consecutive_modem_failures = 0;
+    }
+}
+
+static void modem_advance_reset_cooldown_locked(unsigned int elapsed_ms)
+{
+    if (elapsed_ms >= MODEM_HAL_RESET_COOLDOWN_MS ||
+        reset_cooldown_elapsed_ms >= MODEM_HAL_RESET_COOLDOWN_MS - elapsed_ms)
+    {
+        reset_cooldown_elapsed_ms = MODEM_HAL_RESET_COOLDOWN_MS;
+    }
+    else
+    {
+        reset_cooldown_elapsed_ms += elapsed_ms;
+    }
+}
+
+static void modem_run_deferred_reset_if_ready_locked(void)
+{
+    if (!reset_pending_after_call || voice_call_active)
+    {
+        return;
+    }
+
+    if (reset_cooldown_elapsed_ms < MODEM_HAL_RESET_COOLDOWN_MS)
+    {
+        return;
+    }
+
+    if (modem_hard_reset_locked("deferred_after_call") == 0)
+    {
+        consecutive_modem_failures = 0;
+    }
+}
 
 int modem_get_registration_status(void)
 {
     return (int)modem_state_get_current();
 }
 
+int modem_reset_control_init(void)
+{
+    int result;
+
+    pthread_mutex_lock(&modem_hal_mutex);
+    result = gpio_export(MODEM_HAL_RESET_GPIO_PIN);
+    if (result == 0)
+    {
+        /*
+         * Hardware spec v1.26: GPIO57 LOW / Hi-Z is normal, HIGH asserts
+         * the KTRON SIM7672 RESET/RST line. Claim as output with initial LOW
+         * atomically so application restart cannot create a HIGH reset glitch.
+         */
+        result = gpio_set_output_value(MODEM_HAL_RESET_GPIO_PIN, 0);
+    }
+
+    if (result == 0)
+    {
+        reset_control_initialized = 1;
+        printf("Modem HAL: reset control GPIO%d initialized LOW/normal\n",
+               MODEM_HAL_RESET_GPIO_PIN);
+    }
+    else
+    {
+        printf("Modem HAL: warning: failed to initialize reset control GPIO%d\n",
+               MODEM_HAL_RESET_GPIO_PIN);
+    }
+
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return result;
+}
+
+static int modem_hard_reset_locked(const char *reason)
+{
+    char response[MODEM_HAL_RESPONSE_SIZE];
+    int elapsed_ms = 0;
+    int consecutive_ok = 0;
+
+    if (!reset_control_initialized)
+    {
+        if (gpio_export(MODEM_HAL_RESET_GPIO_PIN) != 0 ||
+            gpio_set_output_value(MODEM_HAL_RESET_GPIO_PIN, 0) != 0)
+        {
+            printf("Modem HAL: failed to initialize reset GPIO%d before hard reset\n",
+                   MODEM_HAL_RESET_GPIO_PIN);
+            return -1;
+        }
+        reset_control_initialized = 1;
+    }
+
+    printf("Modem HAL: asserting SIM7672 hard reset on GPIO%d for %u ms reason=%s\n",
+           MODEM_HAL_RESET_GPIO_PIN,
+           MODEM_HAL_RESET_PULSE_MS,
+           reason != NULL ? reason : "manual");
+    if (gpio_write_value(MODEM_HAL_RESET_GPIO_PIN, 1) != 0)
+    {
+        return -1;
+    }
+
+    modem_hal_sleep_ms(MODEM_HAL_RESET_PULSE_MS);
+
+    if (gpio_write_value(MODEM_HAL_RESET_GPIO_PIN, 0) != 0)
+    {
+        return -1;
+    }
+    printf("Modem HAL: released SIM7672 reset GPIO%d LOW/normal\n",
+           MODEM_HAL_RESET_GPIO_PIN);
+
+    modem_state_init();
+    reset_cooldown_elapsed_ms = 0;
+    reset_pending_after_call = 0;
+#ifdef SIMULATE_MODEM
+    simulated_hard_reset_count++;
+#endif
+    while (elapsed_ms < MODEM_HAL_RESET_BOOT_READY_TIMEOUT_MS)
+    {
+        response[0] = '\0';
+        if (sim_modem_send_at("AT", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) == 0 &&
+            strstr(response, "OK") != NULL &&
+            strstr(response, "ERROR") == NULL)
+        {
+            consecutive_ok++;
+            if (consecutive_ok >= MODEM_HAL_RESET_AT_OK_REQUIRED)
+            {
+                printf("Modem HAL: SIM7672 hard reset complete; AT ready after %d ms\n",
+                       elapsed_ms);
+                return 0;
+            }
+        }
+        else
+        {
+            consecutive_ok = 0;
+        }
+
+        modem_hal_sleep_ms(MODEM_HAL_RESET_AT_POLL_MS);
+        elapsed_ms += MODEM_HAL_RESET_AT_POLL_MS;
+    }
+
+    printf("Modem HAL: SIM7672 hard reset timed out waiting for repeated AT/OK\n");
+    return -1;
+}
+
+int modem_hard_reset(void)
+{
+    int result;
+
+    pthread_mutex_lock(&modem_hal_mutex);
+    result = modem_hard_reset_locked("manual");
+    if (result == 0)
+    {
+        consecutive_modem_failures = 0;
+    }
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return result;
+}
+
 int modem_register_network(void)
 {
     int tick_result;
+    int registered;
 
+    pthread_mutex_lock(&modem_hal_mutex);
     if (modem_state_is_registered())
     {
+        modem_note_success_locked();
+        pthread_mutex_unlock(&modem_hal_mutex);
         return 1;
     }
 
     tick_result = modem_state_tick();
     if (tick_result != 0)
     {
+        modem_note_failure_locked("registration");
+        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 
-    return modem_state_is_registered() ? 1 : 0;
+    registered = modem_state_is_registered();
+    if (registered)
+    {
+        modem_note_success_locked();
+    }
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return registered ? 1 : 0;
 }
 
 #ifndef SIMULATE_MODEM
@@ -302,6 +543,31 @@ static modem_call_status_t parse_clcc_status(const char *response)
     default:
         return MODEM_CALL_STATUS_FAILED;
     }
+}
+
+static int cereg_response_is_registered(const char *response)
+{
+    const char *line;
+    int n;
+    int stat;
+
+    if (response == NULL)
+    {
+        return 0;
+    }
+
+    line = strstr(response, "+CEREG:");
+    if (line == NULL)
+    {
+        return 0;
+    }
+
+    if (sscanf(line, "+CEREG: %d,%d", &n, &stat) != 2)
+    {
+        return 0;
+    }
+
+    return stat == 1 || stat == 5;
 }
 #endif
 
@@ -563,18 +829,17 @@ int modem_delete_sms(int index)
     return result;
 }
 
-int modem_send_sms(const char *number, const char *message)
+static int modem_send_sms_once_locked(const char *number, const char *message)
 {
-    if (number == NULL || number[0] == '\0' || message == NULL || message[0] == '\0')
-    {
-        printf("Modem HAL: SMS number and message are required\n");
-        return -1;
-    }
-
 #ifdef SIMULATE_MODEM
     int simulated_result = 0;
 
-    pthread_mutex_lock(&modem_hal_mutex);
+    simulated_sms_attempt_count++;
+    if (simulated_sms_send_delay_ms > 0)
+    {
+        simulated_sleep_ms(simulated_sms_send_delay_ms);
+    }
+
     if (simulated_sms_send_result_index < simulated_sms_send_result_count)
     {
         simulated_result = simulated_sms_send_results[simulated_sms_send_result_index++];
@@ -582,7 +847,6 @@ int modem_send_sms(const char *number, const char *message)
     if (simulated_result != 0)
     {
         printf("Modem HAL: simulated SMS send failed to %s: %s\n", number, message);
-        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 
@@ -597,7 +861,6 @@ int modem_send_sms(const char *number, const char *message)
                  number);
     }
     simulated_sms_count++;
-    pthread_mutex_unlock(&modem_hal_mutex);
     return 0;
 #else
     int fd;
@@ -607,11 +870,9 @@ int modem_send_sms(const char *number, const char *message)
     int payload_length;
     int result = -1;
 
-    pthread_mutex_lock(&modem_hal_mutex);
     fd = open_modem_serial();
     if (fd < 0)
     {
-        pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 
@@ -676,9 +937,57 @@ int modem_send_sms(const char *number, const char *message)
 
 done:
     close(fd);
-    pthread_mutex_unlock(&modem_hal_mutex);
     return result;
 #endif
+}
+
+int modem_send_sms(const char *number, const char *message)
+{
+    int attempt;
+
+    if (number == NULL || number[0] == '\0' || message == NULL || message[0] == '\0')
+    {
+        printf("Modem HAL: SMS number and message are required\n");
+        return -1;
+    }
+
+    pthread_mutex_lock(&modem_hal_mutex);
+    for (attempt = 1; attempt <= 2; attempt++)
+    {
+        if (modem_send_sms_once_locked(number, message) == 0)
+        {
+            if (sms_tx_fault_active)
+            {
+                printf("Modem HAL: SMS TX fault cleared after successful send\n");
+            }
+            sms_tx_fault_active = 0;
+            modem_note_success_locked();
+            pthread_mutex_unlock(&modem_hal_mutex);
+            return 0;
+        }
+
+        printf("Modem HAL: SMS send attempt %d failed for %s\n", attempt, number);
+        if (attempt == 1)
+        {
+            printf("Modem HAL: retrying SMS send once for %s\n", number);
+        }
+    }
+
+    sms_tx_fault_active = 1;
+    printf("Modem HAL: SMS_TX_FAIL active after retry failure for %s\n", number);
+    modem_note_failure_locked("SMS_TX");
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return -1;
+}
+
+int modem_sms_tx_fault_active(void)
+{
+    int active;
+
+    pthread_mutex_lock(&modem_hal_mutex);
+    active = sms_tx_fault_active;
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return active;
 }
 
 int modem_make_voice_call(const char *number)
@@ -694,16 +1003,16 @@ int modem_make_voice_call(const char *number)
         return -1;
     }
 
-    if (voice_call_active)
-    {
-        printf("Modem HAL: voice call already active, skipping new call to %s\n", number);
-        return 0;
-    }
-
     snprintf(command, sizeof(command), "ATD%s;", number);
 
 #ifdef SIMULATE_MODEM
     pthread_mutex_lock(&modem_hal_mutex);
+    if (voice_call_active)
+    {
+        printf("Modem HAL: voice call already active, skipping new call to %s\n", number);
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return 0;
+    }
     printf("Modem HAL: would start voice call to %s with %s\n", number, command);
     snprintf(simulated_last_call_number, sizeof(simulated_last_call_number), "%s", number);
     if (simulated_call_count < MODEM_HAL_SIMULATED_HISTORY_MAX)
@@ -720,13 +1029,21 @@ int modem_make_voice_call(const char *number)
         printf("Modem HAL: simulated voice call command failed for %s\n", number);
         voice_call_active = 0;
         voice_call_status = MODEM_CALL_STATUS_FAILED;
+        modem_note_failure_locked("CALL_DIAL");
         pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
 #else
     pthread_mutex_lock(&modem_hal_mutex);
+    if (voice_call_active)
+    {
+        printf("Modem HAL: voice call already active, skipping new call to %s\n", number);
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return 0;
+    }
     if (sim_modem_send_at(command, response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
     {
+        modem_note_failure_locked("CALL_DIAL");
         pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
@@ -734,6 +1051,7 @@ int modem_make_voice_call(const char *number)
     if (strstr(response, "ERROR") != NULL)
     {
         printf("Modem HAL: voice call command failed: %s\n", response);
+        modem_note_failure_locked("CALL_DIAL");
         pthread_mutex_unlock(&modem_hal_mutex);
         return -1;
     }
@@ -741,6 +1059,7 @@ int modem_make_voice_call(const char *number)
     printf("Modem HAL: voice call started to %s\n", number);
 #endif
 
+    modem_note_success_locked();
     voice_call_active = 1;
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
@@ -749,19 +1068,86 @@ int modem_make_voice_call(const char *number)
     return 0;
 }
 
+int modem_prepare_for_next_voice_call(void)
+{
+#ifndef SIMULATE_MODEM
+    char response[MODEM_HAL_RESPONSE_SIZE] = "";
+    modem_call_status_t status;
+#endif
+
+    pthread_mutex_lock(&modem_hal_mutex);
+
+#ifdef SIMULATE_MODEM
+    printf("Modem HAL: would settle modem before next voice call with ATH/CEREG/CLCC\n");
+    if (voice_call_active)
+    {
+        simulated_hangup_count++;
+    }
+    voice_call_active = 0;
+    voice_call_elapsed_ms = 0;
+    voice_call_status_elapsed_ms = 0;
+    voice_call_status = MODEM_CALL_STATUS_IDLE;
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return 0;
+#else
+    if (sim_modem_send_at("ATH", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
+    {
+        printf("Modem HAL: warning: ATH failed during call settle\n");
+    }
+
+    voice_call_active = 0;
+    voice_call_elapsed_ms = 0;
+    voice_call_status_elapsed_ms = 0;
+    voice_call_status = MODEM_CALL_STATUS_IDLE;
+
+    if (sim_modem_send_at("AT+CEREG?", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0 ||
+        !cereg_response_is_registered(response))
+    {
+        printf("Modem HAL: warning: modem not registered while settling voice call: %s\n",
+               response);
+        modem_note_failure_locked("CALL_SETTLE_CEREG");
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return -1;
+    }
+
+    if (sim_modem_send_at("AT+CLCC", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
+    {
+        printf("Modem HAL: warning: failed to verify no active call during settle\n");
+        modem_note_failure_locked("CALL_SETTLE_CLCC");
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return -1;
+    }
+
+    status = parse_clcc_status(response);
+    if (status != MODEM_CALL_STATUS_ENDED)
+    {
+        printf("Modem HAL: warning: call still present after settle, status=%d\n", status);
+        modem_note_failure_locked("CALL_SETTLE_BUSY");
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return -1;
+    }
+
+    modem_note_success_locked();
+    printf("Modem HAL: voice call path settled for next dial\n");
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return 0;
+#endif
+}
+
 void modem_hangup_voice_call(void)
 {
 #ifndef SIMULATE_MODEM
     char response[MODEM_HAL_RESPONSE_SIZE];
 #endif
 
+    pthread_mutex_lock(&modem_hal_mutex);
     if (!voice_call_active)
     {
         voice_call_status = MODEM_CALL_STATUS_IDLE;
+        pthread_mutex_unlock(&modem_hal_mutex);
         return;
     }
 
-    pthread_mutex_lock(&modem_hal_mutex);
 #ifdef SIMULATE_MODEM
     printf("Modem HAL: would send ATH to end current call\n");
     simulated_hangup_count++;
@@ -785,12 +1171,20 @@ void modem_hal_tick(unsigned int elapsed_ms)
     char response[MODEM_HAL_RESPONSE_SIZE];
 #endif
 
-    if (!voice_call_active || elapsed_ms == 0)
+    if (elapsed_ms == 0)
     {
         return;
     }
 
     pthread_mutex_lock(&modem_hal_mutex);
+    modem_advance_reset_cooldown_locked(elapsed_ms);
+    if (!voice_call_active)
+    {
+        modem_run_deferred_reset_if_ready_locked();
+        pthread_mutex_unlock(&modem_hal_mutex);
+        return;
+    }
+
     if (elapsed_ms > MODEM_HAL_CALL_MAX_DURATION_MS - voice_call_elapsed_ms)
     {
         voice_call_elapsed_ms = MODEM_HAL_CALL_MAX_DURATION_MS;
@@ -816,6 +1210,7 @@ void modem_hal_tick(unsigned int elapsed_ms)
         voice_call_elapsed_ms = 0;
         voice_call_status_elapsed_ms = 0;
         voice_call_status = MODEM_CALL_STATUS_ENDED;
+        modem_run_deferred_reset_if_ready_locked();
         pthread_mutex_unlock(&modem_hal_mutex);
         return;
     }
@@ -859,6 +1254,11 @@ void modem_hal_tick(unsigned int elapsed_ms)
     if (sim_modem_send_at("AT+CLCC", response, sizeof(response), MODEM_HAL_SHORT_TIMEOUT_MS) != 0)
     {
         voice_call_status = MODEM_CALL_STATUS_FAILED;
+        voice_call_active = 0;
+        voice_call_elapsed_ms = 0;
+        voice_call_status_elapsed_ms = 0;
+        modem_note_failure_locked("CALL_STATUS");
+        modem_run_deferred_reset_if_ready_locked();
         pthread_mutex_unlock(&modem_hal_mutex);
         return;
     }
@@ -873,23 +1273,39 @@ void modem_hal_tick(unsigned int elapsed_ms)
         voice_call_status_elapsed_ms = 0;
     }
 #endif
+    modem_run_deferred_reset_if_ready_locked();
     pthread_mutex_unlock(&modem_hal_mutex);
 }
 
 int modem_voice_call_is_active(void)
 {
-    return voice_call_active;
+    int active;
+
+    pthread_mutex_lock(&modem_hal_mutex);
+    active = voice_call_active;
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return active;
 }
 
 modem_call_status_t modem_get_voice_call_status(void)
 {
-    return voice_call_status;
+    modem_call_status_t status;
+
+    pthread_mutex_lock(&modem_hal_mutex);
+    status = voice_call_status;
+    pthread_mutex_unlock(&modem_hal_mutex);
+    return status;
 }
 
 #ifdef SIMULATE_MODEM
 int modem_get_simulated_sms_count(void)
 {
     return simulated_sms_count;
+}
+
+int modem_get_simulated_sms_attempt_count(void)
+{
+    return simulated_sms_attempt_count;
 }
 
 int modem_get_simulated_call_count(void)
@@ -900,6 +1316,11 @@ int modem_get_simulated_call_count(void)
 int modem_get_simulated_hangup_count(void)
 {
     return simulated_hangup_count;
+}
+
+int modem_get_simulated_hard_reset_count(void)
+{
+    return simulated_hard_reset_count;
 }
 
 const char *modem_get_simulated_last_sms_number(void)
@@ -1009,6 +1430,13 @@ void modem_set_simulated_sms_send_results(const int *results, int count)
     simulated_sms_send_result_count = count;
 }
 
+void modem_set_simulated_sms_send_delay_ms(unsigned int delay_ms)
+{
+    pthread_mutex_lock(&modem_hal_mutex);
+    simulated_sms_send_delay_ms = delay_ms;
+    pthread_mutex_unlock(&modem_hal_mutex);
+}
+
 void modem_simulate_incoming_sms(const char *sender, const char *text)
 {
     modem_incoming_sms_t *sms;
@@ -1063,10 +1491,13 @@ void modem_reset_simulated_state(void)
     simulated_call_start_result_index = 0;
     simulated_sms_send_result_count = 0;
     simulated_sms_send_result_index = 0;
+    simulated_sms_send_delay_ms = 0;
+    simulated_sms_attempt_count = 0;
     simulated_inbox_count = 0;
     simulated_next_sms_index = 1;
     simulated_deleted_sms_count = 0;
     simulated_sms_receive_init_count = 0;
+    simulated_hard_reset_count = 0;
     for (i = 0; i < MODEM_HAL_SIMULATED_INBOX_MAX; i++)
     {
         simulated_inbox[i].index = 0;
@@ -1077,5 +1508,9 @@ void modem_reset_simulated_state(void)
     voice_call_elapsed_ms = 0;
     voice_call_status_elapsed_ms = 0;
     voice_call_status = MODEM_CALL_STATUS_IDLE;
+    sms_tx_fault_active = 0;
+    consecutive_modem_failures = 0;
+    reset_pending_after_call = 0;
+    reset_cooldown_elapsed_ms = MODEM_HAL_RESET_COOLDOWN_MS;
 }
 #endif

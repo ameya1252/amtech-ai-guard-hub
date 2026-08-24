@@ -334,6 +334,7 @@ def parse_camera_registration(payload):
     camera_serial = payload.get("camera_serial")
     slot_number = payload.get("slot_number")
     camera_ip = payload.get("camera_ip")
+    camera_mac = payload.get("camera_mac")
     camera_username = payload.get("camera_username")
     camera_password = payload.get("camera_password")
 
@@ -354,6 +355,7 @@ def parse_camera_registration(payload):
         "camera_serial": str(camera_serial).strip().upper(),
         "slot_number": normalized_slot,
         "camera_ip": str(camera_ip).strip() if camera_ip else None,
+        "camera_mac": str(camera_mac).strip().lower() if camera_mac else None,
         "camera_username": str(camera_username).strip() if camera_username else None,
         "camera_password": str(camera_password) if camera_password else None,
     }
@@ -556,10 +558,10 @@ def push_title_for_event(event_type):
 def push_body_for_event(shop, event_type):
     shop_name = shop.shop_name if shop else "your shop"
     if event_type == "intrusion-front":
-        return f"Person detected by Cam 1 at {shop_name}."
+        return f"Person detected by Cam 1 at {shop_name}. System temporarily disarmed; will re-arm after siren stops."
     if event_type == "intrusion-parking":
-        return f"Person detected by Cam 2 at {shop_name}."
-    return f"Person detected at {shop_name}."
+        return f"Person detected by Cam 2 at {shop_name}. System temporarily disarmed; will re-arm after siren stops."
+    return f"Person detected at {shop_name}. System temporarily disarmed; will re-arm after siren stops."
 
 
 def send_expo_push_messages(messages):
@@ -675,6 +677,7 @@ def camera_to_dict(camera):
         "id": camera.id,
         "shop_id": camera.shop_id,
         "camera_serial": camera.camera_serial,
+        "camera_mac": camera.inventory.camera_mac if camera.inventory else None,
         "slot_number": camera.slot_number,
         "enabled": bool(camera.enabled),
     }
@@ -785,12 +788,16 @@ def shop_summary_to_dict(shop):
 def get_or_seed_camera_inventory(db, payload):
     inventory = db.get(CameraInventory, payload["camera_serial"])
     if inventory is not None:
+        if payload.get("camera_mac") and not inventory.camera_mac:
+            inventory.camera_mac = payload["camera_mac"]
+            db.flush()
         return inventory
 
     if payload["camera_ip"] and payload["camera_username"] and payload["camera_password"]:
         inventory = CameraInventory(
             camera_serial=payload["camera_serial"],
             camera_ip=payload["camera_ip"],
+            camera_mac=payload["camera_mac"],
             camera_username=payload["camera_username"],
             camera_password=payload["camera_password"],
         )

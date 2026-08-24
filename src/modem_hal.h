@@ -13,8 +13,12 @@ extern "C" {
  */
 int modem_get_registration_status(void);
 int modem_register_network(void);
+int modem_reset_control_init(void);
+int modem_hard_reset(void);
 int modem_send_sms(const char *number, const char *message);
+int modem_sms_tx_fault_active(void);
 int modem_make_voice_call(const char *number);
+int modem_prepare_for_next_voice_call(void);
 void modem_hal_tick(unsigned int elapsed_ms);
 int modem_voice_call_is_active(void);
 
@@ -47,8 +51,10 @@ void modem_hangup_voice_call(void);
 
 #ifdef SIMULATE_MODEM
 int modem_get_simulated_sms_count(void);
+int modem_get_simulated_sms_attempt_count(void);
 int modem_get_simulated_call_count(void);
 int modem_get_simulated_hangup_count(void);
+int modem_get_simulated_hard_reset_count(void);
 const char *modem_get_simulated_sms_number_at(int index);
 const char *modem_get_simulated_call_number_at(int index);
 const char *modem_get_simulated_last_sms_number(void);
@@ -57,6 +63,7 @@ const char *modem_get_simulated_last_call_number(void);
 void modem_set_simulated_call_status_sequence(const modem_call_status_t *statuses, int count);
 void modem_set_simulated_call_start_results(const int *results, int count);
 void modem_set_simulated_sms_send_results(const int *results, int count);
+void modem_set_simulated_sms_send_delay_ms(unsigned int delay_ms);
 void modem_simulate_incoming_sms(const char *sender, const char *text);
 int modem_get_simulated_deleted_sms_count(void);
 int modem_get_simulated_sms_receive_init_count(void);

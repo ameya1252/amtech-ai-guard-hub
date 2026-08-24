@@ -10,6 +10,7 @@
 #include "runtime_loop.h"
 #include "schedule.h"
 #include "sensor_input.h"
+#include "watchdog_manager.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -43,9 +44,11 @@
 #define AMTECH_STATIC_ZONE_MIN_OCCURRENCES 3
 #define AMTECH_STATIC_ZONE_MAX_PER_CAMERA 8
 #define AMTECH_SMS_REPLY_MAX 256
-#define AMTECH_CAMERA_MONITORING_ACTIVE_SMS "System ARMED"
+#define AMTECH_BRAND_SMS_PREFIX "AMTECH NETTRA"
+#define AMTECH_CAMERA_MONITORING_ACTIVE_SMS AMTECH_BRAND_SMS_PREFIX ": ARMED\nAll monitoring active."
 #define AMTECH_DEFAULT_STATE_PATH "/root/amtech_state.txt"
 #define AMTECH_STATE_LINE_MAX 128
+#define AMTECH_ARM_PREFLIGHT_DETAIL_MAX 192
 
 typedef enum
 {
@@ -110,6 +113,16 @@ typedef struct
     int last_success;
 } runtime_camera_health_t;
 
+typedef struct
+{
+    pthread_mutex_t mutex;
+    camera_detection_result_t results[AMTECH_CAMERA_QUEUE_CAPACITY];
+    int head;
+    int tail;
+    int count;
+    unsigned int dropped_results;
+} camera_result_queue_t;
+
 #ifndef SIMULATE_GPIO
 typedef struct
 {
@@ -124,19 +137,10 @@ typedef struct
 #ifndef SIMULATE_CAMERA
 typedef struct
 {
-    pthread_mutex_t mutex;
-    camera_detection_result_t results[AMTECH_CAMERA_QUEUE_CAPACITY];
-    int head;
-    int tail;
-    int count;
-    unsigned int dropped_results;
-} camera_result_queue_t;
-
-typedef struct
-{
     char source[AMTECH_CAMERA_SOURCE_MAX];
     char event_type[AMTECH_CAMERA_EVENT_TYPE_MAX];
     char rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
+    char camera_mac[AMTECH_CAMERA_MAC_MAX];
     camera_result_queue_t *queue;
     pthread_mutex_t *inference_mutex;
     volatile int stop_requested;
@@ -178,8 +182,20 @@ static int runtime_last_persisted_armed = 0;
 static runtime_arm_control_t runtime_last_persisted_control = RUNTIME_ARM_CONTROL_SCHEDULE;
 
 static void runtime_set_armed(int next_armed, const amtech_config_t *config);
+static int runtime_try_set_armed(int next_armed,
+                                 const amtech_config_t *config,
+                                 int force,
+                                 char *detail,
+                                 size_t detail_size);
+static void runtime_set_manual_armed(int next_armed, const amtech_config_t *config);
+static void runtime_schedule_auto_rearm_after_alarm_trigger(int was_triggered,
+                                                            const char *event_type,
+                                                            const amtech_config_t *config);
 static int runtime_calibration_completion_sms_pending = 0;
 static char runtime_calibration_completion_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
+static pthread_mutex_t runtime_auto_rearm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int runtime_auto_rearm_pending = 0;
+static int runtime_siren_auto_stop_pending = 0;
 
 static int add_watch(gpio_watch_t watches[], int max_watches, int *count, const gpio_watch_t *watch)
 {
@@ -266,13 +282,51 @@ int runtime_build_watched_pins(const amtech_config_t *config,
     return count;
 }
 
+static int runtime_init_configured_sensor_inputs(const amtech_config_t *config)
+{
+    int result = 0;
+
+    if (config == NULL)
+    {
+        return -1;
+    }
+
+    if (sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN) != 0 ||
+        sensor_input_init(AMTECH_SHUTTER_NO_GPIO_PIN) != 0)
+    {
+        result = -1;
+    }
+
+    if (config->shutter_count >= 2)
+    {
+        if (sensor_input_init(AMTECH_SHUTTER2_NC_GPIO_PIN) != 0 ||
+            sensor_input_init(AMTECH_SHUTTER2_NO_GPIO_PIN) != 0)
+        {
+            result = -1;
+        }
+    }
+
+    if (config->panic_enabled && sensor_input_init(AMTECH_PANIC_GPIO_PIN) != 0)
+    {
+        result = -1;
+    }
+
+    if (config->smoke_enabled && sensor_input_init(AMTECH_SMOKE_GPIO_PIN) != 0)
+    {
+        result = -1;
+    }
+
+    return result;
+}
+
 static int add_camera_config(runtime_camera_config_t cameras[],
                              int max_cameras,
                              int *count,
                              int enabled,
                              const char *source,
                              const char *event_type,
-                             const char *rtsp_url)
+                             const char *rtsp_url,
+                             const char *camera_mac)
 {
     if (!enabled)
     {
@@ -295,6 +349,7 @@ static int add_camera_config(runtime_camera_config_t cameras[],
     cameras[*count].source = source;
     cameras[*count].event_type = event_type;
     cameras[*count].rtsp_url = rtsp_url;
+    cameras[*count].camera_mac = camera_mac;
     (*count)++;
     return 0;
 }
@@ -316,7 +371,8 @@ int runtime_build_camera_configs(const amtech_config_t *config,
                           config->camera_enabled,
                           "front",
                           "intrusion-front",
-                          config->camera_rtsp_url) != 0)
+                          config->camera_rtsp_url,
+                          config->camera_mac) != 0)
     {
         return -1;
     }
@@ -327,7 +383,8 @@ int runtime_build_camera_configs(const amtech_config_t *config,
                           config->camera2_enabled,
                           "parking",
                           "intrusion-parking",
-                          config->camera2_rtsp_url) != 0)
+                          config->camera2_rtsp_url,
+                          config->camera2_mac) != 0)
     {
         return -1;
     }
@@ -392,6 +449,7 @@ shutter_state_t runtime_confirmed_shutter_state_from_raw_sequence(int initial_nc
 int runtime_process_configured_shutters(const amtech_config_t *config)
 {
     shutter_state_t shutter_state;
+    int was_triggered;
 
     if (config == NULL)
     {
@@ -399,14 +457,121 @@ int runtime_process_configured_shutters(const amtech_config_t *config)
     }
 
     shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
+    was_triggered = alarm_logic_is_triggered();
     alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-1", "shutter-1");
+    runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, "shutter-1", config);
 
     if (config->shutter_count >= 2)
     {
         shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
+        was_triggered = alarm_logic_is_triggered();
         alarm_logic_handle_shutter_dual_named(shutter_state, "shutter-2", "shutter-2");
+        runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, "shutter-2", config);
     }
 
+    return 0;
+}
+
+static void append_preflight_detail(char *detail,
+                                    size_t detail_size,
+                                    const char *label,
+                                    const char *state)
+{
+    size_t length;
+
+    if (detail == NULL || detail_size == 0 || label == NULL || state == NULL)
+    {
+        return;
+    }
+
+    length = strlen(detail);
+    if (length >= detail_size - 1)
+    {
+        return;
+    }
+
+    snprintf(detail + length,
+             detail_size - length,
+             "%s%s %s",
+             length > 0 ? "; " : "",
+             label,
+             state);
+}
+
+int runtime_arm_preflight_check(const amtech_config_t *config, char *detail, size_t detail_size)
+{
+    shutter_state_t shutter_state;
+    int panic_raw;
+    int smoke_triggered;
+    int ok = 1;
+
+    if (detail != NULL && detail_size > 0)
+    {
+        detail[0] = '\0';
+    }
+
+    if (config == NULL)
+    {
+        append_preflight_detail(detail, detail_size, "Config", "missing");
+        return -1;
+    }
+
+    shutter_state = shutter_read_dual_state(AMTECH_SHUTTER_NC_GPIO_PIN, AMTECH_SHUTTER_NO_GPIO_PIN);
+    if (shutter_state != SHUTTER_CLOSED)
+    {
+        append_preflight_detail(detail, detail_size, "Sh1", shutter_state_to_string(shutter_state));
+        ok = 0;
+    }
+
+    if (config->shutter_count >= 2)
+    {
+        shutter_state = shutter_read_dual_state(AMTECH_SHUTTER2_NC_GPIO_PIN, AMTECH_SHUTTER2_NO_GPIO_PIN);
+        if (shutter_state != SHUTTER_CLOSED)
+        {
+            append_preflight_detail(detail, detail_size, "Sh2", shutter_state_to_string(shutter_state));
+            ok = 0;
+        }
+    }
+
+    if (config->panic_enabled)
+    {
+        panic_raw = sensor_input_read_raw(AMTECH_PANIC_GPIO_PIN);
+        if (panic_raw < 0)
+        {
+            append_preflight_detail(detail, detail_size, "Panic", "read-fail");
+            ok = 0;
+        }
+        else if (runtime_panic_triggered_from_raw(panic_raw))
+        {
+            append_preflight_detail(detail, detail_size, "Panic", "active");
+            ok = 0;
+        }
+    }
+
+    if (config->smoke_enabled)
+    {
+        smoke_triggered = sensor_input_read(AMTECH_SMOKE_GPIO_PIN);
+        if (smoke_triggered < 0)
+        {
+            append_preflight_detail(detail, detail_size, "Smoke", "read-fail");
+            ok = 0;
+        }
+        else if (smoke_triggered)
+        {
+            append_preflight_detail(detail, detail_size, "Smoke", "active");
+            ok = 0;
+        }
+    }
+
+    if (!ok)
+    {
+        amtech_logf("Runtime",
+                    "ARM preflight failed: %s",
+                    detail != NULL && detail[0] != '\0' ? detail : "unknown sensor fault");
+        return -1;
+    }
+
+    append_preflight_detail(detail, detail_size, "OK", "all configured wired sensors normal");
     return 0;
 }
 
@@ -613,6 +778,7 @@ static int runtime_persist_armed_state(int armed, runtime_arm_control_t control)
 static int runtime_restore_persisted_state(const amtech_config_t *config)
 {
     runtime_persisted_state_t state;
+    char preflight_detail[AMTECH_ARM_PREFLIGHT_DETAIL_MAX];
 
     if (runtime_read_persisted_state(&state) != 0)
     {
@@ -629,7 +795,12 @@ static int runtime_restore_persisted_state(const amtech_config_t *config)
     runtime_last_persisted_known = 1;
     runtime_last_persisted_armed = state.armed;
     runtime_last_persisted_control = state.control;
-    runtime_set_armed(state.armed, config);
+    if (runtime_try_set_armed(state.armed, config, 0, preflight_detail, sizeof(preflight_detail)) != 0)
+    {
+        runtime_set_armed(0, config);
+        printf("Runtime: restored persisted ARM blocked by sensor preflight: %s\n",
+               preflight_detail[0] != '\0' ? preflight_detail : "unknown sensor fault");
+    }
     printf("Runtime: restored persisted state ARMED=%d previous CONTROL=%s; holding until next schedule boundary\n",
            state.armed,
            runtime_arm_control_to_text(state.control));
@@ -671,6 +842,22 @@ static void runtime_prepare_calibration_completion_sms(const amtech_config_t *co
     }
 }
 
+static void runtime_prepare_calibration_completion_sms_for_sender(const char *sender)
+{
+    runtime_clear_calibration_completion_sms();
+
+    if (sender == NULL || sender[0] == '\0')
+    {
+        return;
+    }
+
+    snprintf(runtime_calibration_completion_contacts[0],
+             sizeof(runtime_calibration_completion_contacts[0]),
+             "%s",
+             sender);
+    runtime_calibration_completion_sms_pending = 1;
+}
+
 static void runtime_send_calibration_completion_sms(void)
 {
     int i;
@@ -691,7 +878,7 @@ static void runtime_send_calibration_completion_sms(void)
                        AMTECH_CAMERA_MONITORING_ACTIVE_SMS);
     }
 
-    printf("Runtime: sent camera monitoring active SMS to configured alert contacts\n");
+    printf("Runtime: sent camera monitoring active SMS to pending recipient(s)\n");
     runtime_clear_calibration_completion_sms();
 }
 
@@ -764,6 +951,41 @@ static void runtime_set_armed(int next_armed, const amtech_config_t *config)
     runtime_persist_armed_state(alarm_logic_is_armed(), runtime_arm_control);
 }
 
+static int runtime_try_set_armed(int next_armed,
+                                 const amtech_config_t *config,
+                                 int force,
+                                 char *detail,
+                                 size_t detail_size)
+{
+    if (next_armed && !force)
+    {
+        if (runtime_arm_preflight_check(config, detail, detail_size) != 0)
+        {
+            return -1;
+        }
+    }
+
+    if (next_armed && force)
+    {
+        amtech_logf("Runtime", "ARM preflight bypassed by explicit force override");
+    }
+
+    runtime_set_armed(next_armed, config);
+    return 0;
+}
+
+static void runtime_cancel_auto_rearm(void)
+{
+    pthread_mutex_lock(&runtime_auto_rearm_mutex);
+    if (runtime_auto_rearm_pending || runtime_siren_auto_stop_pending)
+    {
+        printf("Runtime: canceled pending automatic re-arm\n");
+    }
+    runtime_auto_rearm_pending = 0;
+    runtime_siren_auto_stop_pending = 0;
+    pthread_mutex_unlock(&runtime_auto_rearm_mutex);
+}
+
 static void runtime_apply_schedule_armed(int scheduled_armed, const amtech_config_t *config)
 {
     if (!runtime_last_schedule_known)
@@ -786,13 +1008,89 @@ static void runtime_apply_schedule_armed(int scheduled_armed, const amtech_confi
         return;
     }
 
-    runtime_set_armed(scheduled_armed, config);
+    if (runtime_try_set_armed(scheduled_armed, config, 0, NULL, 0) != 0)
+    {
+        runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
+        amtech_logf("Runtime", "schedule ARM blocked by sensor preflight; holding DISARMED until owner resolves or overrides");
+    }
+}
+
+static void runtime_set_manual_armed_internal(int next_armed,
+                                              const amtech_config_t *config,
+                                              int cancel_auto_rearm,
+                                              int force,
+                                              char *detail,
+                                              size_t detail_size)
+{
+    if (cancel_auto_rearm)
+    {
+        runtime_cancel_auto_rearm();
+    }
+
+    runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
+    if (runtime_try_set_armed(next_armed, config, force, detail, detail_size) != 0)
+    {
+        runtime_set_armed(0, config);
+    }
 }
 
 static void runtime_set_manual_armed(int next_armed, const amtech_config_t *config)
 {
-    runtime_arm_control = RUNTIME_ARM_CONTROL_MANUAL;
-    runtime_set_armed(next_armed, config);
+    runtime_set_manual_armed_internal(next_armed, config, 1, 0, NULL, 0);
+}
+
+static void runtime_siren_auto_stop_callback(void *user_data)
+{
+    (void)user_data;
+
+    pthread_mutex_lock(&runtime_auto_rearm_mutex);
+    if (runtime_auto_rearm_pending)
+    {
+        runtime_siren_auto_stop_pending = 1;
+    }
+    pthread_mutex_unlock(&runtime_auto_rearm_mutex);
+}
+
+static void runtime_process_auto_rearm_after_siren_stop(const amtech_config_t *config)
+{
+    int should_rearm = 0;
+
+    pthread_mutex_lock(&runtime_auto_rearm_mutex);
+    if (runtime_auto_rearm_pending && runtime_siren_auto_stop_pending)
+    {
+        runtime_auto_rearm_pending = 0;
+        runtime_siren_auto_stop_pending = 0;
+        should_rearm = 1;
+    }
+    pthread_mutex_unlock(&runtime_auto_rearm_mutex);
+
+    if (!should_rearm)
+    {
+        return;
+    }
+
+    amtech_logf("Runtime", "siren completed; automatically re-arming system");
+    runtime_set_manual_armed_internal(1, config, 0, 0, NULL, 0);
+}
+
+static void runtime_schedule_auto_rearm_after_alarm_trigger(int was_triggered,
+                                                            const char *event_type,
+                                                            const amtech_config_t *config)
+{
+    if (was_triggered || !alarm_logic_is_triggered())
+    {
+        return;
+    }
+
+    pthread_mutex_lock(&runtime_auto_rearm_mutex);
+    runtime_auto_rearm_pending = 1;
+    runtime_siren_auto_stop_pending = 0;
+    pthread_mutex_unlock(&runtime_auto_rearm_mutex);
+
+    runtime_set_manual_armed_internal(0, config, 0, 0, NULL, 0);
+    amtech_logf("Runtime",
+                "alarm event=%s temporarily disarmed system; automatic re-arm pending after siren stops",
+                event_type != NULL ? event_type : "unknown");
 }
 
 static void runtime_apply_config_schedule(const amtech_config_t *config)
@@ -1110,24 +1408,70 @@ static void runtime_build_camera_status(const amtech_config_t *config,
                                         size_t buffer_size)
 {
     const char *source = camera_index == 2 ? "parking" : "front";
-    int enabled = camera_index == 2 ? config->camera2_enabled : config->camera_enabled;
-    const char *rtsp_url = camera_index == 2 ? config->camera2_rtsp_url : config->camera_rtsp_url;
 
-    if (!enabled || rtsp_url == NULL || rtsp_url[0] == '\0')
+    (void)config;
+
+    if (alarm_logic_is_armed())
     {
-        snprintf(buffer, buffer_size, "off");
+        char health_text[32];
+
+        runtime_camera_health_text(source, health_text, sizeof(health_text));
+        if (strcmp(health_text, "failing") == 0)
+        {
+            snprintf(buffer, buffer_size, "Check");
+        }
+        else
+        {
+            snprintf(buffer, buffer_size, "Live, AI On");
+        }
         return;
     }
 
-    runtime_camera_health_text(source, buffer, buffer_size);
+    snprintf(buffer, buffer_size, "Live, AI Off");
+}
+
+static void runtime_build_modem_status(char *buffer, size_t buffer_size)
+{
+    modem_state_t state = (modem_state_t)modem_get_registration_status();
+
+    if (buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+
+    snprintf(buffer,
+             buffer_size,
+             "%s%s",
+             state == MODEM_STATE_REGISTERED ? "OK" : "Check",
+             modem_sms_tx_fault_active() ? " | SMS TX FAULT" : "");
+}
+
+static void runtime_append_status_line(char *buffer,
+                                       size_t buffer_size,
+                                       const char *line)
+{
+    size_t length;
+
+    if (buffer == NULL || buffer_size == 0 || line == NULL || line[0] == '\0')
+    {
+        return;
+    }
+
+    length = strlen(buffer);
+    if (length >= buffer_size - 1)
+    {
+        return;
+    }
+
+    snprintf(buffer + length, buffer_size - length, "%s%s", length > 0 ? "\n" : "", line);
 }
 
 static void runtime_build_status_message(const amtech_config_t *config, char *buffer, size_t buffer_size)
 {
     char front_camera[32];
     char parking_camera[32];
-    const char *modem_name;
-    int modem_state;
+    char modem_status[40];
+    char line[AMTECH_SMS_REPLY_MAX];
 
     if (buffer == NULL || buffer_size == 0)
     {
@@ -1141,21 +1485,46 @@ static void runtime_build_status_message(const amtech_config_t *config, char *bu
         return;
     }
 
-    runtime_build_camera_status(config, 1, front_camera, sizeof(front_camera));
-    runtime_build_camera_status(config, 2, parking_camera, sizeof(parking_camera));
-    modem_state = modem_get_registration_status();
-    modem_name = modem_state_name((modem_state_t)modem_state);
+    snprintf(line,
+             sizeof(line),
+             AMTECH_BRAND_SMS_PREFIX ": %s",
+             alarm_logic_is_armed() ? "ARMED" : "DISARMED");
+    runtime_append_status_line(buffer, buffer_size, line);
 
-    snprintf(buffer,
-             buffer_size,
-             "%s; Panic %s; Sh1 cfg; Sh2 %s; Smoke %s; Front cam %s; Parking cam %s; Modem %s last-known",
-             alarm_logic_is_armed() ? "ARMED" : "DISARMED",
-             config->panic_enabled ? "cfg" : "off",
-             config->shutter_count >= 2 ? "cfg" : "off",
-             config->smoke_enabled ? "cfg" : "off",
-             front_camera,
-             parking_camera,
-             modem_name);
+    snprintf(line,
+             sizeof(line),
+             "Panic: %s | Sh1: Closed",
+             config->panic_enabled ? "Ready" : "Not set");
+    if (config->shutter_count >= 2)
+    {
+        snprintf(line + strlen(line), sizeof(line) - strlen(line), " | Sh2: Closed");
+    }
+    if (config->smoke_enabled)
+    {
+        snprintf(line + strlen(line), sizeof(line) - strlen(line), " | Smoke: Normal");
+    }
+    runtime_append_status_line(buffer, buffer_size, line);
+
+    line[0] = '\0';
+    if (config->camera_enabled && config->camera_rtsp_url[0] != '\0')
+    {
+        runtime_build_camera_status(config, 1, front_camera, sizeof(front_camera));
+        snprintf(line, sizeof(line), "Cam1: %s", front_camera);
+    }
+    if (config->camera2_enabled && config->camera2_rtsp_url[0] != '\0')
+    {
+        runtime_build_camera_status(config, 2, parking_camera, sizeof(parking_camera));
+        snprintf(line + strlen(line),
+                 sizeof(line) - strlen(line),
+                 "%sCam2: %s",
+                 line[0] != '\0' ? " | " : "",
+                 parking_camera);
+    }
+    runtime_append_status_line(buffer, buffer_size, line);
+
+    runtime_build_modem_status(modem_status, sizeof(modem_status));
+    snprintf(line, sizeof(line), "Modem: %s", modem_status);
+    runtime_append_status_line(buffer, buffer_size, line);
 }
 
 static void runtime_build_help_message(char *buffer, size_t buffer_size)
@@ -1167,11 +1536,14 @@ static void runtime_build_help_message(char *buffer, size_t buffer_size)
 
     snprintf(buffer,
              buffer_size,
-             "ARM - Arm system; DISARM - Disarm system; STOP - Stop active alarm & disarm; STATUS - System status report; HELP - This message");
+             "ARM - Arm system; ARM FORCE - bypass sensor fault; DISARM - Disarm system; STOP - Stop active alarm & disarm; STATUS - System status; HELP - This message");
 }
 
-void runtime_process_camera_detection_result(const camera_detection_result_t *result)
+static void runtime_process_camera_detection_result_with_config(const camera_detection_result_t *result,
+                                                                const amtech_config_t *config)
 {
+    int was_triggered;
+
     if (result == NULL)
     {
         return;
@@ -1206,6 +1578,7 @@ void runtime_process_camera_detection_result(const camera_detection_result_t *re
         return;
     }
 
+    was_triggered = alarm_logic_is_triggered();
     if (result->person_detected)
     {
         alarm_logic_handle_detection_source(0,
@@ -1215,15 +1588,23 @@ void runtime_process_camera_detection_result(const camera_detection_result_t *re
     }
 
     alarm_logic_end_frame_source(result->event_type);
+    runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, result->event_type, config);
+}
+
+void runtime_process_camera_detection_result(const camera_detection_result_t *result)
+{
+    runtime_process_camera_detection_result_with_config(result, NULL);
 }
 
 #ifdef AMTECH_RUNTIME_LOOP_TEST
 void runtime_test_set_armed(int armed)
 {
+    alarm_logic_set_siren_auto_stop_callback(runtime_siren_auto_stop_callback, NULL);
     runtime_arm_control = RUNTIME_ARM_CONTROL_SCHEDULE;
     runtime_last_schedule_known = 0;
     runtime_last_schedule_armed = 0;
     runtime_last_persisted_known = 0;
+    runtime_cancel_auto_rearm();
     runtime_set_armed(armed, NULL);
 }
 
@@ -1241,7 +1622,7 @@ void runtime_test_apply_app_command(amtech_device_command_type_t command, const 
 {
     if (command == AMTECH_DEVICE_COMMAND_ARM)
     {
-        runtime_set_manual_armed(1, config);
+        runtime_set_manual_armed_internal(1, config, 1, 1, NULL, 0);
     }
     else if (command == AMTECH_DEVICE_COMMAND_DISARM)
     {
@@ -1253,6 +1634,14 @@ void runtime_test_tick(unsigned int elapsed_ms)
 {
     alarm_logic_tick(elapsed_ms);
     runtime_static_calibration_tick(elapsed_ms);
+    runtime_process_auto_rearm_after_siren_stop(NULL);
+}
+
+void runtime_test_tick_with_config(unsigned int elapsed_ms, const amtech_config_t *config)
+{
+    alarm_logic_tick(elapsed_ms);
+    runtime_static_calibration_tick(elapsed_ms);
+    runtime_process_auto_rearm_after_siren_stop(config);
 }
 
 int runtime_test_static_calibration_active(void)
@@ -1435,19 +1824,43 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     trim_runtime_text(command);
     uppercase_runtime_text(command);
 
-    if (strcmp(command, "ARM") == 0)
+    if (strcmp(command, "ARM") == 0 || strcmp(command, "ARM FORCE") == 0 || strcmp(command, "FORCE ARM") == 0)
     {
+        int force_arm = strcmp(command, "ARM") != 0;
+        char preflight_detail[AMTECH_ARM_PREFLIGHT_DETAIL_MAX];
+        char reply[AMTECH_SMS_REPLY_MAX];
+
         if (alarm_logic_is_armed())
         {
-            runtime_set_manual_armed(1, config);
-            send_sms_command_reply(sms->sender, "ARM", "System already ARMED");
+            send_sms_command_reply(sms->sender, "ARM", AMTECH_BRAND_SMS_PREFIX ": already ARMED");
             amtech_logf("Runtime", "processed redundant SMS ARM command from %s", sms->sender);
             return 1;
         }
 
-        runtime_set_manual_armed(1, config);
-        send_sms_command_reply(sms->sender, "ARM", "System ARMING...");
-        amtech_logf("Runtime", "processed SMS ARM command from %s", sms->sender);
+        runtime_set_manual_armed_internal(1,
+                                          config,
+                                          1,
+                                          force_arm,
+                                          preflight_detail,
+                                          sizeof(preflight_detail));
+        if (!alarm_logic_is_armed())
+        {
+            snprintf(reply,
+                     sizeof(reply),
+                     AMTECH_BRAND_SMS_PREFIX ": ARM BLOCKED\n%s\nSend ARM FORCE to override.",
+                     preflight_detail[0] != '\0' ? preflight_detail : "Sensor fault");
+            send_sms_command_reply(sms->sender, "ARM", reply);
+            amtech_logf("Runtime", "blocked SMS ARM from %s: %s", sms->sender, preflight_detail);
+            return 1;
+        }
+
+        runtime_prepare_calibration_completion_sms_for_sender(sms->sender);
+        send_sms_command_reply(sms->sender,
+                               "ARM",
+                               force_arm
+                                   ? AMTECH_BRAND_SMS_PREFIX ": ARMING\nForced override active. Cameras calibrating."
+                                   : AMTECH_BRAND_SMS_PREFIX ": ARMING\nSensors active. Cameras calibrating.");
+        amtech_logf("Runtime", "processed SMS %s command from %s", force_arm ? "ARM FORCE" : "ARM", sms->sender);
         return 1;
     }
 
@@ -1672,7 +2085,12 @@ static void apply_device_command(runtime_device_command_context_t *context,
 
     if (command.type == AMTECH_DEVICE_COMMAND_ARM)
     {
-        runtime_set_manual_armed(1, config);
+        /*
+         * App pending-command ack does not yet carry an "ARM blocked" result
+         * back to the app. Keep app ARM behavior unchanged until the backend
+         * command-result contract can display preflight failures clearly.
+         */
+        runtime_set_manual_armed_internal(1, config, 1, 1, NULL, 0);
         printf("Runtime: accepted app ARM command id=%s\n", command.id);
     }
     else if (command.type == AMTECH_DEVICE_COMMAND_DISARM)
@@ -1856,19 +2274,43 @@ static int process_sms_remote_command(const amtech_config_t *config, const modem
     trim_runtime_text(command);
     uppercase_runtime_text(command);
 
-    if (strcmp(command, "ARM") == 0)
+    if (strcmp(command, "ARM") == 0 || strcmp(command, "ARM FORCE") == 0 || strcmp(command, "FORCE ARM") == 0)
     {
+        int force_arm = strcmp(command, "ARM") != 0;
+        char preflight_detail[AMTECH_ARM_PREFLIGHT_DETAIL_MAX];
+        char reply[AMTECH_SMS_REPLY_MAX];
+
         if (alarm_logic_is_armed())
         {
-            runtime_set_manual_armed(1, config);
-            send_sms_command_reply(sms->sender, "ARM", "System already ARMED");
+            send_sms_command_reply(sms->sender, "ARM", AMTECH_BRAND_SMS_PREFIX ": already ARMED");
             amtech_logf("Runtime", "processed redundant SMS ARM command from %s", sms->sender);
             return 1;
         }
 
-        runtime_set_manual_armed(1, config);
-        send_sms_command_reply(sms->sender, "ARM", "System ARMING...");
-        amtech_logf("Runtime", "processed SMS ARM command from %s", sms->sender);
+        runtime_set_manual_armed_internal(1,
+                                          config,
+                                          1,
+                                          force_arm,
+                                          preflight_detail,
+                                          sizeof(preflight_detail));
+        if (!alarm_logic_is_armed())
+        {
+            snprintf(reply,
+                     sizeof(reply),
+                     AMTECH_BRAND_SMS_PREFIX ": ARM BLOCKED\n%s\nSend ARM FORCE to override.",
+                     preflight_detail[0] != '\0' ? preflight_detail : "Sensor fault");
+            send_sms_command_reply(sms->sender, "ARM", reply);
+            amtech_logf("Runtime", "blocked SMS ARM from %s: %s", sms->sender, preflight_detail);
+            return 1;
+        }
+
+        runtime_prepare_calibration_completion_sms_for_sender(sms->sender);
+        send_sms_command_reply(sms->sender,
+                               "ARM",
+                               force_arm
+                                   ? AMTECH_BRAND_SMS_PREFIX ": ARMING\nForced override active. Cameras calibrating."
+                                   : AMTECH_BRAND_SMS_PREFIX ": ARMING\nSensors active. Cameras calibrating.");
+        amtech_logf("Runtime", "processed SMS %s command from %s", force_arm ? "ARM FORCE" : "ARM", sms->sender);
         return 1;
     }
 
@@ -1954,7 +2396,6 @@ int runtime_poll_sms_remote_control(const amtech_config_t *config)
     return process_result;
 }
 
-#ifndef SIMULATE_CAMERA
 static void camera_queue_init(camera_result_queue_t *queue)
 {
     pthread_mutex_init(&queue->mutex, NULL);
@@ -2061,6 +2502,7 @@ int runtime_test_camera_queue_fifo_drop_oldest(void)
 }
 #endif
 
+#ifndef SIMULATE_CAMERA
 static void *camera_thread_main(void *arg)
 {
     camera_thread_context_t *context = (camera_thread_context_t *)arg;
@@ -2076,11 +2518,12 @@ static void *camera_thread_main(void *arg)
             continue;
         }
 
-        if (camera_detection_run_once_for_source(context->source,
-                                                 context->event_type,
-                                                 context->rtsp_url,
-                                                 context->inference_mutex,
-                                                 &result) == 0)
+        if (camera_detection_run_once_for_source_with_mac(context->source,
+                                                          context->event_type,
+                                                          context->rtsp_url,
+                                                          context->camera_mac,
+                                                          context->inference_mutex,
+                                                          &result) == 0)
         {
             runtime_camera_health_note(context->source, 1);
             camera_queue_publish(context->queue, &result);
@@ -2106,6 +2549,10 @@ static int start_camera_thread(const runtime_camera_config_t *camera,
     snprintf(context->source, sizeof(context->source), "%s", camera->source);
     snprintf(context->event_type, sizeof(context->event_type), "%s", camera->event_type);
     snprintf(context->rtsp_url, sizeof(context->rtsp_url), "%s", camera->rtsp_url);
+    snprintf(context->camera_mac,
+             sizeof(context->camera_mac),
+             "%s",
+             camera->camera_mac != NULL ? camera->camera_mac : "");
     context->queue = queue;
     context->inference_mutex = inference_mutex;
     context->stop_requested = 0;
@@ -2157,14 +2604,15 @@ static void maybe_run_simulated_camera_once(const amtech_config_t *config)
     {
         camera_detection_result_t result;
 
-        if (camera_detection_run_once_for_source(cameras[i].source,
-                                                 cameras[i].event_type,
-                                                 cameras[i].rtsp_url,
-                                                 NULL,
-                                                 &result) == 0)
+        if (camera_detection_run_once_for_source_with_mac(cameras[i].source,
+                                                          cameras[i].event_type,
+                                                          cameras[i].rtsp_url,
+                                                          cameras[i].camera_mac,
+                                                          NULL,
+                                                          &result) == 0)
         {
             runtime_camera_health_note(cameras[i].source, 1);
-            runtime_process_camera_detection_result(&result);
+            runtime_process_camera_detection_result_with_config(&result, config);
         }
         else
         {
@@ -2302,13 +2750,14 @@ static void close_gpio_watches(gpio_watch_t watches[], int count)
     }
 }
 
-static void handle_sensor_event(gpio_watch_t *watch)
+static void handle_sensor_event(gpio_watch_t *watch, const amtech_config_t *config)
 {
     long long now_ms = monotonic_ms();
     long long elapsed_ms = now_ms - watch->last_event_ms;
     int raw_value;
     int confirmed_raw_value;
     int panic_triggered;
+    int was_triggered;
     shutter_state_t shutter_state;
 
     if (watch->last_event_ms != 0 && elapsed_ms >= 0 && elapsed_ms < AMTECH_DEBOUNCE_CONFIRM_MS)
@@ -2340,7 +2789,9 @@ static void handle_sensor_event(gpio_watch_t *watch)
         {
             printf("Runtime: ignored panic GPIO %d transient state\n", watch->pin);
         }
+        was_triggered = alarm_logic_is_triggered();
         alarm_logic_handle_panic(panic_triggered);
+        runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, "panic", config);
         return;
     }
 
@@ -2358,7 +2809,9 @@ static void handle_sensor_event(gpio_watch_t *watch)
 
         if (runtime_active_low_confirmed_from_raw_sequence(raw_value, confirmed_raw_value))
         {
+            was_triggered = alarm_logic_is_triggered();
             alarm_logic_handle_smoke(1);
+            runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, "smoke", config);
         }
         else
         {
@@ -2373,9 +2826,11 @@ static void handle_sensor_event(gpio_watch_t *watch)
     }
 
     shutter_state = shutter_read_dual_state(watch->shutter_nc_pin, watch->shutter_no_pin);
+    was_triggered = alarm_logic_is_triggered();
     alarm_logic_handle_shutter_dual_named(shutter_state,
                                           watch->shutter_name,
                                           watch->shutter_event_type);
+    runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, watch->shutter_event_type, config);
 }
 
 static int run_interrupt_loop(int force_armed, amtech_config_t *config)
@@ -2500,12 +2955,14 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
         int ready;
         long long now_ms;
 
+        watchdog_manager_note_runtime_heartbeat();
         now_ms = monotonic_ms();
         if (last_alarm_tick_ms != 0 && now_ms >= last_alarm_tick_ms)
         {
             unsigned int elapsed_ms = (unsigned int)(now_ms - last_alarm_tick_ms);
             alarm_logic_tick(elapsed_ms);
             runtime_static_calibration_tick(elapsed_ms);
+            runtime_process_auto_rearm_after_siren_stop(config);
         }
         last_alarm_tick_ms = now_ms;
 
@@ -2540,7 +2997,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
 
             while (camera_queue_consume(&camera_queue, &camera_result))
             {
-                runtime_process_camera_detection_result(&camera_result);
+                runtime_process_camera_detection_result_with_config(&camera_result, config);
             }
         }
 #endif
@@ -2572,7 +3029,7 @@ static int run_interrupt_loop(int force_armed, amtech_config_t *config)
         {
             if (poll_fds[i].revents & (POLLPRI | POLLERR))
             {
-                handle_sensor_event(&watches[i]);
+                handle_sensor_event(&watches[i], config);
             }
             poll_fds[i].revents = 0;
         }
@@ -2588,6 +3045,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
     int should_be_armed;
     int camera_processed = 0;
 
+    watchdog_manager_note_runtime_heartbeat();
     printf("Runtime: iteration %d\n", iteration);
 
     if (!force_armed)
@@ -2614,21 +3072,31 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         sensor_input_set_simulated_raw_value(AMTECH_PANIC_GPIO_PIN, panic_raw_value);
         printf("Runtime: panic GPIO %d raw %d\n", AMTECH_PANIC_GPIO_PIN, panic_raw_value);
         panic_triggered = runtime_panic_triggered_from_raw(panic_raw_value);
-        alarm_logic_handle_panic(panic_triggered);
+        {
+            int was_triggered = alarm_logic_is_triggered();
+            alarm_logic_handle_panic(panic_triggered);
+            runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, "panic", config);
+        }
     }
 
     if (config->smoke_enabled)
     {
         int smoke_initial_raw = iteration == 7 ? 0 : 1;
         int smoke_confirmed_raw = iteration == 7 ? 0 : 1;
+        int smoke_triggered;
 
         sensor_input_set_simulated_raw_value(AMTECH_SMOKE_GPIO_PIN, smoke_confirmed_raw);
         printf("Runtime: smoke GPIO %d initial raw %d confirmed raw %d\n",
                AMTECH_SMOKE_GPIO_PIN,
                smoke_initial_raw,
                smoke_confirmed_raw);
-        alarm_logic_handle_smoke(runtime_active_low_confirmed_from_raw_sequence(smoke_initial_raw,
-                                                                                smoke_confirmed_raw));
+        smoke_triggered = runtime_active_low_confirmed_from_raw_sequence(smoke_initial_raw,
+                                                                         smoke_confirmed_raw);
+        {
+            int was_triggered = alarm_logic_is_triggered();
+            alarm_logic_handle_smoke(smoke_triggered);
+            runtime_schedule_auto_rearm_after_alarm_trigger(was_triggered, "smoke", config);
+        }
     }
 
 #ifdef SIMULATE_CAMERA
@@ -2642,14 +3110,15 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
         {
             camera_detection_result_t camera_result;
 
-            if (camera_detection_run_once_for_source(camera_configs[camera_index].source,
-                                                     camera_configs[camera_index].event_type,
-                                                     camera_configs[camera_index].rtsp_url,
-                                                     NULL,
-                                                     &camera_result) == 0)
+            if (camera_detection_run_once_for_source_with_mac(camera_configs[camera_index].source,
+                                                              camera_configs[camera_index].event_type,
+                                                              camera_configs[camera_index].rtsp_url,
+                                                              camera_configs[camera_index].camera_mac,
+                                                              NULL,
+                                                              &camera_result) == 0)
             {
                 runtime_camera_health_note(camera_configs[camera_index].source, 1);
-                runtime_process_camera_detection_result(&camera_result);
+                runtime_process_camera_detection_result_with_config(&camera_result, config);
                 camera_processed = 1;
             }
             else
@@ -2666,6 +3135,7 @@ static void runtime_iteration(int iteration, int force_armed, const amtech_confi
     }
     alarm_logic_tick(1000);
     runtime_static_calibration_tick(1000);
+    runtime_process_auto_rearm_after_siren_stop(config);
     runtime_poll_sms_remote_control(config);
 }
 
@@ -2686,14 +3156,15 @@ void runtime_test_run_simulated_camera_once(const amtech_config_t *config)
     {
         camera_detection_result_t camera_result;
 
-        if (camera_detection_run_once_for_source(camera_configs[camera_index].source,
-                                                 camera_configs[camera_index].event_type,
-                                                 camera_configs[camera_index].rtsp_url,
-                                                 NULL,
-                                                 &camera_result) == 0)
+        if (camera_detection_run_once_for_source_with_mac(camera_configs[camera_index].source,
+                                                          camera_configs[camera_index].event_type,
+                                                          camera_configs[camera_index].rtsp_url,
+                                                          camera_configs[camera_index].camera_mac,
+                                                          NULL,
+                                                          &camera_result) == 0)
         {
             runtime_camera_health_note(camera_configs[camera_index].source, 1);
-            runtime_process_camera_detection_result(&camera_result);
+            runtime_process_camera_detection_result_with_config(&camera_result, config);
         }
         else
         {
@@ -2725,7 +3196,12 @@ int main(int argc, char **argv)
     }
 
     alarm_logic_init(AMTECH_ALARM_GPIO_PIN);
+    alarm_logic_set_siren_auto_stop_callback(runtime_siren_auto_stop_callback, NULL);
     alarm_logic_set_shop_id(config.shop_id);
+    if (runtime_init_configured_sensor_inputs(&config) != 0)
+    {
+        printf("Runtime: warning: one or more configured sensor inputs failed to initialize\n");
+    }
     runtime_state_persistence_enabled = 1;
     if (force_armed)
     {
@@ -2741,24 +3217,15 @@ int main(int argc, char **argv)
     {
         runtime_set_armed(0, &config);
     }
-#ifdef SIMULATE_GPIO
-    sensor_input_init(AMTECH_SHUTTER_NC_GPIO_PIN);
-    sensor_input_init(AMTECH_SHUTTER_NO_GPIO_PIN);
-    if (config.shutter_count >= 2)
-    {
-        sensor_input_init(AMTECH_SHUTTER2_NC_GPIO_PIN);
-        sensor_input_init(AMTECH_SHUTTER2_NO_GPIO_PIN);
-    }
-    if (config.panic_enabled)
-    {
-        sensor_input_init(AMTECH_PANIC_GPIO_PIN);
-    }
-    if (config.smoke_enabled)
-    {
-        sensor_input_init(AMTECH_SMOKE_GPIO_PIN);
-    }
-#endif
     runtime_apply_config_schedule(&config);
+    if (watchdog_manager_start(config.watchdog_enabled) != 0)
+    {
+        printf("Runtime: warning: watchdog manager failed to start; continuing without hardware watchdog\n");
+    }
+    if (modem_reset_control_init() != 0)
+    {
+        printf("Runtime: warning: SIM7672 reset control initialization failed; hard modem recovery disabled\n");
+    }
     if (modem_sms_receive_init() != 0)
     {
         printf("Runtime: warning: SMS remote control initialization failed; continuing without SMS control\n");
@@ -2770,9 +3237,14 @@ int main(int argc, char **argv)
         runtime_iteration(i, force_armed, &config);
     }
 
+    watchdog_manager_stop();
     return 0;
 #else
-    return run_interrupt_loop(force_armed, &config);
+    {
+        int result = run_interrupt_loop(force_armed, &config);
+        watchdog_manager_stop();
+        return result;
+    }
 #endif
 }
 #endif

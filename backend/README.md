@@ -164,7 +164,13 @@ At startup, the backend seeds `camera_inventory` from `AMTECH_CAMERA_INVENTORY` 
 AMTECH_CAMERA_INVENTORY=CAM-0001,192.168.0.4,Amtech,Amtech123;CAM-0002,192.168.0.7,Amtech1,Amtech1234
 ```
 
-For the current pilot defaults, `CAM-0001` and `CAM-0002` are seeded from `AMTECH_CAMERA_1_*` and `AMTECH_CAMERA_2_*` environment variables, with the tested local camera values as fallbacks. Move these values fully into environment variables before broader deployment.
+An optional fifth field stores the camera MAC address:
+
+```text
+AMTECH_CAMERA_INVENTORY=CAM-0001,192.168.0.4,Amtech,Amtech123,aa:bb:cc:dd:ee:01
+```
+
+For the current pilot defaults, `CAM-0001` and `CAM-0002` are seeded from `AMTECH_CAMERA_1_*` and `AMTECH_CAMERA_2_*` environment variables, including optional `AMTECH_CAMERA_1_MAC` and `AMTECH_CAMERA_2_MAC`, with the tested local camera values as fallbacks. Move these values fully into environment variables before broader deployment.
 
 ```http
 POST /shop/{shop_id}/camera
@@ -177,16 +183,16 @@ Content-Type: application/json
 }
 ```
 
-For current test-scale/admin seeding, the same endpoint can create a missing inventory record if `camera_ip`, `camera_username`, and `camera_password` are also supplied. The normal owner app should not send those fields.
+For current test-scale/admin seeding, the same endpoint can create a missing inventory record if `camera_ip`, `camera_username`, and `camera_password` are also supplied. `camera_mac` can also be supplied. The normal owner app should only send `camera_serial` and `slot_number`; owners should not see or submit camera IP, username, password, or MAC details.
 
-Camera assignment is currently unique per shop slot, not globally unique per serial, so repeated pilot/test onboarding can reuse the seeded `CAM-0001` and `CAM-0002` records without exposing camera credentials. Before production, add a stricter ownership/claiming flow if one physical camera must be locked to one shop.
+Camera assignment is unique per shop slot and globally unique per camera serial. One physical camera can only be registered to one shop at a time.
 
 ```http
 GET /shop/{shop_id}/cameras
 Authorization: Bearer {token}
 ```
 
-The response includes `camera_serial`, `slot_number`, and `enabled`, but not camera IP, username, or password.
+The response includes `camera_serial`, optional `camera_mac`, `slot_number`, and `enabled`, but not camera IP, username, or password. MAC is stable identity metadata; RTSP still connects through the current IP/hostname on the hub side.
 
 ## Media Upload URLs
 

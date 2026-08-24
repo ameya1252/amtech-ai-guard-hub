@@ -57,10 +57,13 @@ ALERT_CONTACT_2=+919922434811
 ALERT_CONTACT_3=+919922435710
 CAMERA_ENABLED=0
 CAMERA_RTSP_URL=rtsp://user:pass@camera-ip:554/stream1
+CAMERA_MAC=
 CAMERA2_ENABLED=0
 CAMERA2_RTSP_URL=
+CAMERA2_MAC=
 BACKEND_BASE_URL=https://amtech-ai-guard-hub-production.up.railway.app
 DEVICE_CONFIG_TOKEN=
+WATCHDOG_ENABLED=0
 ```
 
 Important defaults:
@@ -72,18 +75,46 @@ Important defaults:
 - `SCHEDULE_DISARM=06:00`
 - `MODEM_DEVICE=/dev/ttyS5`
 - `CAMERA_ENABLED=0` and `CAMERA2_ENABLED=0`, so camera detection is disabled unless explicitly configured.
+- `CAMERA_MAC` and `CAMERA2_MAC` default empty. When set, they provide stable camera identity for same-LAN ARP-based IP recovery while keeping RTSP URLs as the actual connection strings.
 - `DEVICE_CONFIG_TOKEN` is empty, so backend config sync is disabled unless explicitly configured.
+- `WATCHDOG_ENABLED=0`, so the RV1106 hardware watchdog is disabled until explicitly verified and enabled on the board.
 
 The shutter and smoke config defaults are deliberately conservative so unwired/floating pins are not watched accidentally.
 
-Backend config sync now updates only `SCHEDULE_ARM`, `SCHEDULE_DISARM`, and `ALERT_CONTACT_1/2/3`. It preserves local hardware install keys such as shutter count, camera URLs, modem device, and sensor enable flags.
+Backend config sync now updates only `SCHEDULE_ARM`, `SCHEDULE_DISARM`, and `ALERT_CONTACT_1/2/3`. It preserves local hardware install keys such as shutter count, camera URLs/MACs, modem device, watchdog enablement, and sensor enable flags.
+
+Internal hardware watchdog support is implemented in `src/watchdog_manager.c`. When enabled, the runtime opens `/dev/watchdog0` or `/dev/watchdog`, requests a 60-second timeout, feeds every 10 seconds, and withholds keepalive if the main runtime heartbeat has been stale for 15 seconds. It is deliberately opt-in with `WATCHDOG_ENABLED=0` by default until the real board confirms watchdog device availability and logs the effective kernel timeout.
+
+## Factory / Field Acceptance Testing
+
+A universal board-side harness now exists at:
+
+```text
+scripts/factory_test_nettra.sh
+```
+
+It is intended for manufacturing bring-up and repeatable field checks across new Nettra hubs. The default run is safe: it checks installed config, runtime binary, autostart script, GPIO availability, backend health, runtime process status, watchdog/modem/camera dependencies, and recent logs without toggling relays, sending SMS, placing calls, or changing `/root/amtech_config.txt`.
+
+Board run:
+
+```sh
+DEVICE_SERIAL=AMT-0000 /root/factory_test_nettra.sh
+```
+
+Optional deeper checks are explicitly gated:
+
+- `FACTORY_TEST_CAMERA=1` captures one frame from each enabled RTSP camera and runs the production YOLOv5 detector path.
+- `FACTORY_TEST_MODEM_AT=1` runs `/root/test_raw_at` if present.
+- `FACTORY_TEST_RELAYS=1` toggles the siren/strobe active-LOW outputs and should only be used when audible/visible activation is safe.
+
+The harness writes timestamped reports under `/root/factory_reports/`. It is not a substitute for the full regression suite or real intrusion tests, but it gives a single repeatable acceptance command for production units.
 
 Status as of this checkpoint:
 
 - Backend source and device simulation tests are complete.
 - Live Railway endpoint verification passed for owner-authenticated `GET`/`PUT`, unauthenticated rejection, and invalid schedule rejection.
-- Live Railway device-token verification is pending setting `DEVICE_CONFIG_SYNC_TOKEN` in Railway and matching `DEVICE_CONFIG_TOKEN` on the hub.
-- Real hardware polling from the Luckfox board is deferred until SSH/board access is available again.
+- Device-token config sync support is implemented through `DEVICE_CONFIG_TOKEN` on the hub and `DEVICE_CONFIG_SYNC_TOKEN` on Railway.
+- Fast app arm/disarm command polling is implemented separately from the slower schedule/contact config sync.
 
 ## GPIO And Sensor Hardware
 
@@ -184,6 +215,11 @@ Repeated triggers:
 - Any fresh trigger reactivates the siren and restarts the 5-second siren timer, even if the alarm was already active.
 - Notification/call/SMS dispatch is rate-limited by a shared `30000ms` cooldown to avoid alert spam.
 - The siren/strobe reactivation is independent from the call/SMS alert-dispatch cooldown.
+- After a new alarm event starts, the runtime temporarily disarms so the same incident does not keep retriggering while the siren/call/SMS sequence is active.
+- When the siren naturally auto-stops, the runtime automatically re-arms through the normal arm transition path. That means camera grace/static-scene calibration restarts, while shutter/panic/smoke become active immediately.
+- Explicit owner `STOP`, `DISARM`, or app disarm cancels the pending automatic re-arm and leaves the system disarmed.
+- The siren auto-stop is wall-clock based and runs from a dedicated timer thread, so blocking modem work cannot stretch a 5-second siren window into a long siren run.
+- `alarm_logic` exposes a siren-auto-stop callback; runtime only uses that callback to mark a pending event, then applies re-arm from the main runtime path so alarm/runtime state is not mutated directly by the siren thread.
 
 ## Camera Detection
 
@@ -258,8 +294,12 @@ Real paths used by the camera module:
 
 The runtime supports two independently configured camera workers:
 
-- Front camera: `CAMERA_ENABLED=1` and `CAMERA_RTSP_URL=...`
-- Parking camera: `CAMERA2_ENABLED=1` and `CAMERA2_RTSP_URL=...`
+- Front camera: `CAMERA_ENABLED=1`, `CAMERA_RTSP_URL=...`, optional `CAMERA_MAC=...`
+- Parking camera: `CAMERA2_ENABLED=1`, `CAMERA2_RTSP_URL=...`, optional `CAMERA2_MAC=...`
+
+The RTSP URL remains required because RTSP connects by IP/hostname. The optional MAC is used as a stable identity: before capture, the runtime checks `/proc/net/arp` for a matching MAC and rewrites only the host/IP portion of the RTSP URL if the camera's DHCP address has changed. If the MAC is absent or not found, the configured RTSP URL is used unchanged. This is useful for same-LAN router/DHCP changes, but it is not expected to work across routers/VLANs.
+
+Production network guidance is now documented in `SETUP.md`: router DHCP reservation/static lease by camera MAC is the preferred fix for changing camera IPs. The hub's MAC-based ARP lookup is a backup, not a replacement for reserving camera IPs in the router. The app can show installer steps for DHCP reservation, but cannot generally create those reservations automatically because consumer routers do not expose one standard API.
 
 Each enabled camera has its own pthread and its own temporary frame/output files. Capture and preprocessing can run in parallel, but the RKNN demo/NPU subprocess is protected by one shared inference mutex so only one camera uses the NPU at a time.
 
@@ -323,7 +363,9 @@ Current modem architecture:
 - The modem is now registration-only for SMS and voice call reliability.
 - The state machine stops at `REGISTERED`.
 - Emergency alerts use modem SMS and voice calls, not modem data or WhatsApp.
-- SMS receiving is used as a backup remote control channel for `ARM` and `DISARM` commands.
+- SMS receiving is used as a backup remote control channel for `ARM`, `DISARM`, `STOP`, `STATUS`, and `HELP` commands.
+- SIM7672 reset control is implemented on GPIO57. The line is initialized LOW/normal with glitch-safe output setup. A hard reset pulses HIGH for 2.5 seconds, releases LOW, then waits for repeated `AT`/`OK` readiness before continuing.
+- Hard modem reset is bounded: repeated high-level modem failures can trigger reset after 3 failures, but resets are rate-limited by a 5-minute cooldown and deferred until any active voice call ends.
 
 Registration state machine:
 
@@ -353,6 +395,10 @@ SMS:
 - Sent once to all configured contacts at the start of an incident.
 - Uses text mode: `AT+CMGF=1`.
 - Uses interactive `AT+CMGS="<number>"`, waits for `>` prompt, sends message text and Ctrl+Z.
+- Each SMS send requires the modem's `+CMGS`/`OK` success response. If sending fails, the modem HAL retries once.
+- If the retry also fails, the modem sets `SMS_TX_FAIL`, logs the failure, and continues normal operation. Calls, siren, ARM/DISARM, STOP, and STATUS processing are not stopped by SMS TX failure.
+- `SMS_TX_FAIL` clears automatically after a later successful SMS send.
+- Alert SMS fan-out runs in its own worker so a slow or failed SMS path cannot block the emergency voice-call sequence.
 
 Voice calls:
 
@@ -361,17 +407,22 @@ Voice calls:
 - Each contact gets up to 2 attempts.
 - Each attempt times out after about 30 seconds in the escalation layer.
 - The modem HAL has a 45-second safety max duration.
+- There is a 1-second retry gap between call attempts so the modem has a clean pause between hangup/end and the next dial.
 - Call status is polled with `AT+CLCC`.
 - `CLCC` state `0` is treated as connected only if it stays active for at least 3 seconds. This reduces the chance that voicemail/IVR briefly stops escalation incorrectly.
+- A fast connection under the voicemail-suspect threshold is not enough to stop escalation; a likely human answer must be both not-too-fast and continuously active for the confirmation window.
 
 Escalation stops if a call is confirmed answered. If nobody answers after all attempts, escalation ends cleanly.
+SMS and calls are deliberately independent: SMS goes to all configured contacts once, while calls continue through the programmed sequence `Contact 1 x2 -> Contact 2 x2 -> Contact 3 x2`. Complete SMS failure must not interrupt or shorten the call sequence.
 
 Alert SMS messages are event-specific:
 
 - Panic: `AMTECH ALERT: Panic button pressed at your shop. Immediate attention needed.`
 - Shutter 1: `AMTECH ALERT: Shutter 1 intrusion detected at your shop.`
 - Shutter 2: `AMTECH ALERT: Shutter 2 intrusion detected at your shop.`
-- Intrusion: `AMTECH ALERT: Person detected inside your shop while armed.`
+- Intrusion: `AMTECH ALERT: Person detected inside your shop. System temporarily disarmed; will re-arm after siren stops.`
+- Front camera: `AMTECH ALERT: Person detected on the front camera. System temporarily disarmed; will re-arm after siren stops.`
+- Parking camera: `AMTECH ALERT: Person detected on the parking camera. System temporarily disarmed; will re-arm after siren stops.`
 - Smoke: `AMTECH ALERT: Smoke detected at your shop. Possible fire emergency.`
 
 `SIMULATE_MODEM` mode prints and records simulated SMS/call/hangup behavior for tests.
@@ -385,13 +436,39 @@ Behavior:
 - The modem is initialized for text-mode SMS receive with `AT+CMGF=1`, SIM storage via `AT+CPMS="SM","SM","SM"`, and stored-message notifications via `AT+CNMI=2,1,0,0,0`.
 - The runtime polls unread SMS periodically using `AT+CMGL="REC UNREAD"`.
 - Only `ALERT_CONTACT_1`, `ALERT_CONTACT_2`, and `ALERT_CONTACT_3` are authorized senders.
-- Valid commands are case-insensitive `ARM`, `DISARM`, and `STOP`.
-- `ARM` calls the same `alarm_logic_set_armed(1)` path used elsewhere and replies with `System ARMING...`, or `System already ARMED` if no state change is needed. After camera calibration completes, the hub sends `System ARMED`.
+- Valid commands are case-insensitive `ARM`, `ARM FORCE`, `DISARM`, `STOP`, `STATUS`, and `HELP`.
+- Normal SMS/schedule/reboot `ARM` now runs a wired-sensor preflight before entering ARMED. Configured shutters must read closed, panic must be idle, and smoke must be normal. A disconnected/open/faulted/tampered shutter, active panic, active smoke, or unreadable configured input blocks SMS/schedule/restore arming and keeps the hub DISARMED. App ARM will get the same visible block behavior after the backend pending-command result contract is extended to return failure reasons to the app.
+- If SMS `ARM` is blocked, the owner receives `AMTECH NETTRA: ARM BLOCKED` with the failing sensor state and the instruction to send `ARM FORCE` only if they intentionally want to bypass the fault.
+- `ARM FORCE` is an authorized SMS-only override that skips wired-sensor preflight for installation/testing or an owner-approved emergency bypass.
+- `ARM` calls the same arming path used elsewhere and replies with `AMTECH NETTRA: ARMING\nSensors active. Cameras calibrating.`, or `AMTECH NETTRA: already ARMED` if no state change is needed. After camera calibration completes, the hub sends `AMTECH NETTRA: ARMED\nAll monitoring active.`
 - `DISARM` calls the same `alarm_logic_set_armed(0)` path used elsewhere and replies with `System DISARMED`, or `System already DISARMED` if no state change is needed.
 - `STOP` calls `alarm_logic_reset()`, disarms the system, and replies with `Alarm stopped, system DISARMED`; if no alarm is active it replies with `No active alarm`.
+- `STATUS` replies with a compact owner-readable status, for example:
+
+```text
+AMTECH NETTRA: ARMED
+Panic: Ready | Sh1: Closed | Sh2: Closed | Smoke: Normal
+Cam1: Live, AI On | Cam2: Live, AI On
+Modem: OK
+```
+
+- If the modem has an active SMS TX fault, `STATUS` appends `SMS TX FAULT` on the modem line.
+- When disarmed, configured cameras are reported as live with AI detection off rather than implying a fault.
+- `HELP` replies with the supported SMS command list.
 - Unknown senders and unrecognized message text are ignored without a reply.
 - Every read SMS is deleted with `AT+CMGD=<index>`, including rejected and malformed messages, so SIM storage does not fill.
 - SMS command polling is serialized through the modem HAL mutex, so a `STOP` SMS can still be processed during an active alert call.
+- SMS reply logging is honest: logs only say a reply was sent if `modem_send_sms()` returned success. Failed replies are logged as applied-but-reply-failed.
+
+## App Command Sync
+
+The app Arm/Disarm buttons do not rely on the 5-minute config sync. They use a fast pending-command path:
+
+- Backend `POST /shop/<shop_id>/arm` and `POST /shop/<shop_id>/disarm` update the app-visible status and set a pending command for the device.
+- Backend `GET /shop/<shop_id>/pending-command` lets the hub poll a lightweight command flag using the device config token.
+- Backend `POST /shop/<shop_id>/pending-command/ack` clears the pending command after the hub applies it.
+- Runtime polls this command path from its own lightweight thread, hands the command back to the main runtime loop, then applies it through the same manual-override path as SMS `ARM`/`DISARM`.
+- App-triggered ARM/DISARM therefore behaves like SMS ARM/DISARM: it overrides the schedule until the next natural schedule boundary.
 
 ## Backend
 
@@ -403,12 +480,19 @@ It provides:
 - `POST /alert`
 - `POST /auth/signup`
 - `POST /auth/login`
+- `POST /auth/forgot-password`
+- `POST /auth/verify-reset-otp`
+- `POST /me/push-token`
 - `POST /shop`
 - `GET /shop/<shop_id>`
 - `GET /me/shops`
+- `POST /shop/<shop_id>/camera`
+- `GET /shop/<shop_id>/cameras`
 - `POST /shop/<shop_id>/arm`
 - `POST /shop/<shop_id>/disarm`
 - `GET /shop/<shop_id>/status`
+- `GET /shop/<shop_id>/pending-command`
+- `POST /shop/<shop_id>/pending-command/ack`
 - `POST /shop/<shop_id>/media/upload-url`
 - `GET /shop/<shop_id>/device-config`
 - `PUT /shop/<shop_id>/device-config`
@@ -421,7 +505,10 @@ Security and infrastructure:
 - Basic rate limiting on auth routes.
 - Database keepalive thread for Railway/Neon stability.
 - R2 presigned upload URL support for future alert images/videos.
-- Device config sync endpoint for schedule and emergency contact settings. The app uses owner JWT auth; the physical hub can use the `X-AMTECH-DEVICE-CONFIG-TOKEN` shared-secret header. Live Railway owner-auth behavior is verified. Device-token live verification is pending Railway `DEVICE_CONFIG_SYNC_TOKEN` setup. Device-side polling is simulation-tested only until the board is reachable again.
+- Device config sync endpoint for schedule and emergency contact settings. The app uses owner JWT auth; the physical hub can use the `X-AMTECH-DEVICE-CONFIG-TOKEN` shared-secret header.
+- Pending-command endpoint for fast app Arm/Disarm delivery to the hub.
+- Expo push-token storage and intrusion push notification support.
+- Forgot-password OTP endpoints using backend-side SMS provider abstraction. `SIMULATE_SMS=1` is the safe default until MSG91/DLT setup is complete.
 
 Database:
 
@@ -429,8 +516,12 @@ Database:
 - `shops`
 - `devices`
 - `alerts`
+- `push_tokens`
+- `camera_inventory`
+- `cameras`
 - `shop_device_schedules`
 - `shop_emergency_contacts`
+- `password_reset_otps`
 
 The backend reads `DATABASE_URL` from the environment. Neon Postgres is intended for Railway. SQLite can still be used for local testing.
 
@@ -450,6 +541,7 @@ Current C test coverage includes:
 - `tests/test_alert_dispatch.c`
 - `tests/test_camera_detection.c`
 - `tests/test_camera_queue.c`
+- `tests/test_watchdog_manager.c`
 
 Diagnostic/hardware bring-up tests and scripts include:
 
@@ -466,15 +558,15 @@ Simulation flags:
 - `SIMULATE_MODEM`
 - `SIMULATE_CAMERA`
 - `SIMULATE_NETWORK`
+- `SIMULATE_WATCHDOG`
 
 ## What Is Still Not Finished
 
 Still pending:
 
-- Final production service packaging for `runtime_loop`.
+- Final production watchdog enablement after verifying `/dev/watchdog0` or `/dev/watchdog` on the board and observing the logged effective timeout.
 - Real end-to-end runtime testing with GPIO sensors, camera RTSP, NPU inference, relays, and modem wired together for a long duration.
-- Mobile app.
-- App UI for editing contact lists and schedules. The backend/device sync foundation now exists, but the settings screens are not built yet.
+- Continuing mobile app polish and production release work.
 - Camera media upload from hub to backend/R2 during alerts.
 - Recovery strategy for modem failures beyond the current terminal `FAILED` state.
 - Replacing subprocess-based camera detection with a lower-level RKNN/RKMPI integration if later performance or reliability requires it.

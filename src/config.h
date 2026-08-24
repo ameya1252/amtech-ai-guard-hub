@@ -22,6 +22,7 @@ extern "C" {
 #define AMTECH_MODEM_DEVICE_MAX 64
 #define AMTECH_ALERT_CONTACT_NUMBER_MAX 24
 #define AMTECH_CAMERA_RTSP_URL_MAX 256
+#define AMTECH_CAMERA_MAC_MAX 18
 #define AMTECH_BACKEND_URL_MAX 256
 #define AMTECH_DEVICE_CONFIG_TOKEN_MAX 128
 #define AMTECH_SHOP_ID_MAX 128
@@ -44,11 +45,14 @@ typedef struct
     char alert_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
     int camera_enabled;
     char camera_rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
+    char camera_mac[AMTECH_CAMERA_MAC_MAX];
     int camera2_enabled;
     char camera2_rtsp_url[AMTECH_CAMERA_RTSP_URL_MAX];
+    char camera2_mac[AMTECH_CAMERA_MAC_MAX];
     char backend_base_url[AMTECH_BACKEND_URL_MAX];
     char device_config_token[AMTECH_DEVICE_CONFIG_TOKEN_MAX];
     char shop_id[AMTECH_SHOP_ID_MAX];
+    int watchdog_enabled;
 } amtech_config_t;
 
 void amtech_config_set_defaults(amtech_config_t *config);

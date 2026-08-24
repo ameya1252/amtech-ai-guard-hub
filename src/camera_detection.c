@@ -1,5 +1,6 @@
 #include "camera_detection.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,208 @@
 #define AMTECH_CAMERA_DEMO_WORKDIR "/root/rknn_yolov5_demo_export"
 #define AMTECH_CAMERA_MODEL_PATH "/root/rknn_yolov5_demo_export/model/yolov5.rknn"
 #define AMTECH_CAMERA_ALARM_PERSON_PREFIX "Alarm: person detected confidence="
+#define AMTECH_CAMERA_ARP_PATH_ENV "AMTECH_ARP_TABLE_PATH"
+#define AMTECH_CAMERA_DEFAULT_ARP_PATH "/proc/net/arp"
+
+static int normalize_mac(const char *input, char *output, size_t output_size)
+{
+    size_t input_index;
+    size_t output_index = 0;
+    int hex_digits = 0;
+
+    if (input == NULL || output == NULL || output_size < 18)
+    {
+        return -1;
+    }
+
+    for (input_index = 0; input[input_index] != '\0'; input_index++)
+    {
+        unsigned char ch = (unsigned char)input[input_index];
+
+        if (ch == ':' || ch == '-' || ch == ' ')
+        {
+            continue;
+        }
+
+        if (!isxdigit(ch))
+        {
+            return -1;
+        }
+
+        if (hex_digits >= 12 || output_index + 1 >= output_size)
+        {
+            return -1;
+        }
+
+        if (hex_digits > 0 && hex_digits % 2 == 0)
+        {
+            if (output_index + 1 >= output_size)
+            {
+                return -1;
+            }
+            output[output_index++] = ':';
+        }
+
+        output[output_index++] = (char)tolower(ch);
+        hex_digits++;
+    }
+
+    if (hex_digits != 12)
+    {
+        return -1;
+    }
+
+    output[output_index] = '\0';
+    return 0;
+}
+
+static int lookup_ip_for_mac(const char *camera_mac, char *ip_buffer, size_t ip_buffer_size)
+{
+    char normalized_target[18];
+    char line[256];
+    const char *arp_path;
+    FILE *fp;
+
+    if (ip_buffer == NULL || ip_buffer_size == 0)
+    {
+        return -1;
+    }
+    ip_buffer[0] = '\0';
+
+    if (normalize_mac(camera_mac, normalized_target, sizeof(normalized_target)) != 0)
+    {
+        printf("Camera: invalid MAC address configured: %s\n",
+               camera_mac != NULL ? camera_mac : "(null)");
+        return -1;
+    }
+
+    arp_path = getenv(AMTECH_CAMERA_ARP_PATH_ENV);
+    if (arp_path == NULL || arp_path[0] == '\0')
+    {
+        arp_path = AMTECH_CAMERA_DEFAULT_ARP_PATH;
+    }
+
+    fp = fopen(arp_path, "r");
+    if (fp == NULL)
+    {
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL)
+    {
+        char ip[64];
+        char hw_type[32];
+        char flags[32];
+        char hw_address[64];
+        char mask[64];
+        char device[64];
+        char normalized_row[18];
+
+        if (sscanf(line, "%63s %31s %31s %63s %63s %63s",
+                   ip,
+                   hw_type,
+                   flags,
+                   hw_address,
+                   mask,
+                   device) != 6)
+        {
+            continue;
+        }
+
+        if (normalize_mac(hw_address, normalized_row, sizeof(normalized_row)) != 0)
+        {
+            continue;
+        }
+
+        if (strcmp(normalized_row, normalized_target) == 0)
+        {
+            snprintf(ip_buffer, ip_buffer_size, "%s", ip);
+            fclose(fp);
+            return 0;
+        }
+    }
+
+    fclose(fp);
+    return -1;
+}
+
+int camera_detection_resolve_rtsp_url_for_mac(const char *rtsp_url,
+                                              const char *camera_mac,
+                                              char *resolved_url,
+                                              unsigned int resolved_url_size)
+{
+    char ip[64];
+    const char *scheme_end;
+    const char *authority_start;
+    const char *host_start;
+    const char *host_end;
+    const char *authority_end;
+    const char *cursor;
+    size_t prefix_len;
+    int written;
+
+    if (rtsp_url == NULL || resolved_url == NULL || resolved_url_size == 0)
+    {
+        return -1;
+    }
+
+    snprintf(resolved_url, resolved_url_size, "%s", rtsp_url);
+
+    if (camera_mac == NULL || camera_mac[0] == '\0')
+    {
+        return 0;
+    }
+
+    if (lookup_ip_for_mac(camera_mac, ip, sizeof(ip)) != 0)
+    {
+        return 0;
+    }
+
+    scheme_end = strstr(rtsp_url, "://");
+    if (scheme_end == NULL)
+    {
+        return 0;
+    }
+
+    authority_start = scheme_end + 3;
+    authority_end = authority_start;
+    while (*authority_end != '\0' && *authority_end != '/')
+    {
+        authority_end++;
+    }
+
+    host_start = authority_start;
+    for (cursor = authority_start; cursor < authority_end; cursor++)
+    {
+        if (*cursor == '@')
+        {
+            host_start = cursor + 1;
+        }
+    }
+
+    host_end = host_start;
+    while (host_end < authority_end && *host_end != ':')
+    {
+        host_end++;
+    }
+
+    prefix_len = (size_t)(host_start - rtsp_url);
+    written = snprintf(resolved_url,
+                       resolved_url_size,
+                       "%.*s%s%s",
+                       (int)prefix_len,
+                       rtsp_url,
+                       ip,
+                       host_end);
+    if (written < 0 || (unsigned int)written >= resolved_url_size)
+    {
+        snprintf(resolved_url, resolved_url_size, "%s", rtsp_url);
+        return -1;
+    }
+
+    printf("Camera: resolved configured MAC %s to IP %s for RTSP\n", camera_mac, ip);
+    return 1;
+}
 
 static void fill_result_identity(camera_detection_result_t *result,
                                  const char *source,
@@ -215,8 +418,22 @@ int camera_detection_run_once_for_source(const char *source,
            result->person_y2);
     return 0;
 }
+
+int camera_detection_run_once_for_source_with_mac(const char *source,
+                                                  const char *event_type,
+                                                  const char *rtsp_url,
+                                                  const char *camera_mac,
+                                                  pthread_mutex_t *inference_mutex,
+                                                  camera_detection_result_t *result)
+{
+    (void)camera_mac;
+    return camera_detection_run_once_for_source(source,
+                                                event_type,
+                                                rtsp_url,
+                                                inference_mutex,
+                                                result);
+}
 #else
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -602,5 +819,30 @@ int camera_detection_run_once_for_source(const char *source,
     }
 
     return parse_detection_output(&paths, result);
+}
+
+int camera_detection_run_once_for_source_with_mac(const char *source,
+                                                  const char *event_type,
+                                                  const char *rtsp_url,
+                                                  const char *camera_mac,
+                                                  pthread_mutex_t *inference_mutex,
+                                                  camera_detection_result_t *result)
+{
+    char resolved_url[512];
+
+    if (camera_detection_resolve_rtsp_url_for_mac(rtsp_url,
+                                                  camera_mac,
+                                                  resolved_url,
+                                                  sizeof(resolved_url)) < 0)
+    {
+        printf("Camera: warning: failed to resolve RTSP URL by MAC; using configured URL\n");
+        snprintf(resolved_url, sizeof(resolved_url), "%s", rtsp_url != NULL ? rtsp_url : "");
+    }
+
+    return camera_detection_run_once_for_source(source,
+                                                event_type,
+                                                resolved_url,
+                                                inference_mutex,
+                                                result);
 }
 #endif

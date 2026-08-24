@@ -11,8 +11,12 @@ extern "C" {
 #define AMTECH_ALERT_DISPATCH_COOLDOWN_MS 30000U
 #define AMTECH_CAMERA_ARM_GRACE_MS 10000U
 
+typedef void (*alarm_logic_siren_auto_stop_callback_t)(void *user_data);
+
 void alarm_logic_init(int gpio_pin);
 void alarm_logic_set_shop_id(const char *shop_id);
+void alarm_logic_set_siren_auto_stop_callback(alarm_logic_siren_auto_stop_callback_t callback,
+                                              void *user_data);
 void alarm_logic_set_armed(int armed);
 void alarm_logic_toggle_armed(void);
 int alarm_logic_is_armed(void);

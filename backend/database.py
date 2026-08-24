@@ -67,6 +67,7 @@ class CameraInventory(Base):
 
     camera_serial = Column(String(255), primary_key=True)
     camera_ip = Column(String(255), nullable=False)
+    camera_mac = Column(String(64), nullable=True)
     camera_username = Column(String(255), nullable=False)
     camera_password = Column(String(255), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
@@ -195,7 +196,7 @@ def camera_inventory_seed_rows():
         rows = []
         for entry in raw_seed.split(";"):
             parts = [part.strip() for part in entry.split(",")]
-            if len(parts) != 4 or not all(parts):
+            if len(parts) not in (4, 5) or not all(parts[:4]):
                 print(f"Skipping invalid AMTECH_CAMERA_INVENTORY entry: {entry}", flush=True)
                 continue
             rows.append({
@@ -203,6 +204,7 @@ def camera_inventory_seed_rows():
                 "camera_ip": parts[1],
                 "camera_username": parts[2],
                 "camera_password": parts[3],
+                "camera_mac": parts[4].lower() if len(parts) == 5 and parts[4] else None,
             })
         return rows
 
@@ -212,12 +214,14 @@ def camera_inventory_seed_rows():
             "camera_ip": os.getenv("AMTECH_CAMERA_1_IP", "192.168.0.4"),
             "camera_username": os.getenv("AMTECH_CAMERA_1_USERNAME", "Amtech"),
             "camera_password": os.getenv("AMTECH_CAMERA_1_PASSWORD", "Amtech123"),
+            "camera_mac": os.getenv("AMTECH_CAMERA_1_MAC") or None,
         },
         {
             "camera_serial": os.getenv("AMTECH_CAMERA_2_SERIAL", "CAM-0002").upper(),
             "camera_ip": os.getenv("AMTECH_CAMERA_2_IP", "192.168.0.7"),
             "camera_username": os.getenv("AMTECH_CAMERA_2_USERNAME", "Amtech1"),
             "camera_password": os.getenv("AMTECH_CAMERA_2_PASSWORD", "Amtech1234"),
+            "camera_mac": os.getenv("AMTECH_CAMERA_2_MAC") or None,
         },
     ]
 
@@ -230,17 +234,29 @@ def seed_camera_inventory():
     with engine.begin() as connection:
         for row in rows:
             existing = connection.execute(
-                text("SELECT camera_serial FROM camera_inventory WHERE camera_serial = :camera_serial"),
+                text("SELECT camera_serial, camera_mac FROM camera_inventory WHERE camera_serial = :camera_serial"),
                 {"camera_serial": row["camera_serial"]},
             ).first()
             if existing is not None:
+                if row.get("camera_mac") and not existing.camera_mac:
+                    connection.execute(
+                        text(
+                            "UPDATE camera_inventory "
+                            "SET camera_mac = :camera_mac "
+                            "WHERE camera_serial = :camera_serial"
+                        ),
+                        {
+                            "camera_serial": row["camera_serial"],
+                            "camera_mac": row["camera_mac"],
+                        },
+                    )
                 continue
 
             connection.execute(
                 text(
                     "INSERT INTO camera_inventory "
-                    "(camera_serial, camera_ip, camera_username, camera_password, created_at) "
-                    "VALUES (:camera_serial, :camera_ip, :camera_username, :camera_password, :created_at)"
+                    "(camera_serial, camera_ip, camera_mac, camera_username, camera_password, created_at) "
+                    "VALUES (:camera_serial, :camera_ip, :camera_mac, :camera_username, :camera_password, :created_at)"
                 ),
                 {
                     **row,
@@ -253,6 +269,7 @@ def run_migrations():
     inspector = inspect(engine)
     shop_columns = {column["name"] for column in inspector.get_columns("shops")}
     alert_columns = {column["name"] for column in inspector.get_columns("alerts")}
+    camera_inventory_columns = {column["name"] for column in inspector.get_columns("camera_inventory")}
     with engine.begin() as connection:
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_devices_shop_id ON devices (shop_id)"))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_cameras_camera_serial ON cameras (camera_serial)"))
@@ -284,6 +301,9 @@ def run_migrations():
 
         if "media_url" not in alert_columns:
             connection.execute(text("ALTER TABLE alerts ADD COLUMN media_url VARCHAR(2048)"))
+
+        if "camera_mac" not in camera_inventory_columns:
+            connection.execute(text("ALTER TABLE camera_inventory ADD COLUMN camera_mac VARCHAR(64)"))
 
 
 def db_session():

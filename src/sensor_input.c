@@ -98,7 +98,7 @@ int sensor_input_init(int pin)
 #endif
 }
 
-int sensor_input_read(int pin)
+int sensor_input_read_raw(int pin)
 {
 #ifdef SIMULATE_GPIO
     int raw_value = sensor_input_simulated_state ? 1 : 0;
@@ -106,9 +106,8 @@ int sensor_input_read(int pin)
     {
         raw_value = simulated_raw_values[pin];
     }
-    int triggered = raw_value == 0 ? 1 : 0;
-    printf("Sensor GPIO %d raw %d triggered %d\n", pin, raw_value, triggered);
-    return triggered;
+    printf("Sensor GPIO %d raw %d\n", pin, raw_value);
+    return raw_value;
 #else
     char path[GPIO_PATH_MAX];
     char value = 0;
@@ -135,8 +134,23 @@ int sensor_input_read(int pin)
         return -1;
     }
 
-    return value == '0' ? 1 : 0;
+    return value == '0' ? 0 : 1;
 #endif
+}
+
+int sensor_input_read(int pin)
+{
+    int raw_value = sensor_input_read_raw(pin);
+    int triggered;
+
+    if (raw_value < 0)
+    {
+        return raw_value;
+    }
+
+    triggered = raw_value == 0 ? 1 : 0;
+    printf("Sensor GPIO %d raw %d triggered %d\n", pin, raw_value, triggered);
+    return triggered;
 }
 
 shutter_state_t shutter_read_dual_state(int nc_pin, int no_pin)

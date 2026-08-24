@@ -116,11 +116,14 @@ void amtech_config_set_defaults(amtech_config_t *config)
     set_alert_contact(config, 2, AMTECH_DEFAULT_ALERT_CONTACT_3);
     config->camera_enabled = 0;
     config->camera_rtsp_url[0] = '\0';
+    config->camera_mac[0] = '\0';
     config->camera2_enabled = 0;
     config->camera2_rtsp_url[0] = '\0';
+    config->camera2_mac[0] = '\0';
     snprintf(config->backend_base_url, sizeof(config->backend_base_url), "%s", AMTECH_DEFAULT_BACKEND_BASE_URL);
     config->device_config_token[0] = '\0';
     snprintf(config->shop_id, sizeof(config->shop_id), "%s", AMTECH_DEFAULT_SHOP_ID);
+    config->watchdog_enabled = 0;
 }
 
 int amtech_config_load(const char *path, amtech_config_t *config)
@@ -140,7 +143,7 @@ int amtech_config_load(const char *path, amtech_config_t *config)
     {
         if (errno == ENOENT)
         {
-            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=0 CAMERA_RTSP_URL=(disabled) CAMERA2_ENABLED=0 CAMERA2_RTSP_URL=(disabled) BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=(unset) SHOP_ID=%s\n",
+            printf("Config: %s not found, using defaults SHUTTER_COUNT=1 PANIC_ENABLED=1 SMOKE_ENABLED=0 SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=0 CAMERA_RTSP_URL=(disabled) CAMERA_MAC=(unset) CAMERA2_ENABLED=0 CAMERA2_RTSP_URL=(disabled) CAMERA2_MAC=(unset) BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=(unset) SHOP_ID=%s WATCHDOG_ENABLED=0\n",
                    path,
                    config->schedule_arm_hour,
                    config->schedule_arm_minute,
@@ -272,6 +275,16 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
             snprintf(config->camera_rtsp_url, sizeof(config->camera_rtsp_url), "%s", value);
         }
+        else if (strcmp(key, "CAMERA_MAC") == 0)
+        {
+            if (strlen(value) >= sizeof(config->camera_mac))
+            {
+                printf("Config: CAMERA_MAC too long, keeping current value\n");
+                continue;
+            }
+
+            snprintf(config->camera_mac, sizeof(config->camera_mac), "%s", value);
+        }
         else if (strcmp(key, "CAMERA2_ENABLED") == 0)
         {
             if (parse_int_value(key, value, &parsed_value) != 0)
@@ -290,6 +303,16 @@ int amtech_config_load(const char *path, amtech_config_t *config)
             }
 
             snprintf(config->camera2_rtsp_url, sizeof(config->camera2_rtsp_url), "%s", value);
+        }
+        else if (strcmp(key, "CAMERA2_MAC") == 0)
+        {
+            if (strlen(value) >= sizeof(config->camera2_mac))
+            {
+                printf("Config: CAMERA2_MAC too long, keeping current value\n");
+                continue;
+            }
+
+            snprintf(config->camera2_mac, sizeof(config->camera2_mac), "%s", value);
         }
         else if (strcmp(key, "BACKEND_BASE_URL") == 0)
         {
@@ -321,6 +344,15 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
             snprintf(config->shop_id, sizeof(config->shop_id), "%s", value);
         }
+        else if (strcmp(key, "WATCHDOG_ENABLED") == 0)
+        {
+            if (parse_int_value(key, value, &parsed_value) != 0)
+            {
+                continue;
+            }
+
+            config->watchdog_enabled = parsed_value ? 1 : 0;
+        }
         else
         {
             printf("Config: ignoring unknown key %s\n", key);
@@ -336,7 +368,7 @@ int amtech_config_load(const char *path, amtech_config_t *config)
 
     fclose(fp);
 
-    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=%d CAMERA_RTSP_URL=%s CAMERA2_ENABLED=%d CAMERA2_RTSP_URL=%s BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=%s SHOP_ID=%s\n",
+    printf("Config: SHUTTER_COUNT=%d PANIC_ENABLED=%d SMOKE_ENABLED=%d SCHEDULE_ARM=%02d:%02d SCHEDULE_DISARM=%02d:%02d MODEM_DEVICE=%s ALERT_CONTACT_1=%s ALERT_CONTACT_2=%s ALERT_CONTACT_3=%s CAMERA_ENABLED=%d CAMERA_RTSP_URL=%s CAMERA_MAC=%s CAMERA2_ENABLED=%d CAMERA2_RTSP_URL=%s CAMERA2_MAC=%s BACKEND_BASE_URL=%s DEVICE_CONFIG_TOKEN=%s SHOP_ID=%s WATCHDOG_ENABLED=%d\n",
            config->shutter_count,
            config->panic_enabled,
            config->smoke_enabled,
@@ -350,10 +382,13 @@ int amtech_config_load(const char *path, amtech_config_t *config)
            config->alert_contacts[2],
            config->camera_enabled,
            config->camera_rtsp_url[0] != '\0' ? config->camera_rtsp_url : "(disabled)",
+           config->camera_mac[0] != '\0' ? config->camera_mac : "(unset)",
            config->camera2_enabled,
            config->camera2_rtsp_url[0] != '\0' ? config->camera2_rtsp_url : "(disabled)",
+           config->camera2_mac[0] != '\0' ? config->camera2_mac : "(unset)",
            config->backend_base_url,
            config->device_config_token[0] != '\0' ? "(set)" : "(unset)",
-           config->shop_id);
+           config->shop_id,
+           config->watchdog_enabled);
     return 0;
 }

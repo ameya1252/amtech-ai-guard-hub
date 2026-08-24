@@ -6,6 +6,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -348,6 +349,49 @@ static void check_legacy_camera_wrapper(void)
               1);
 }
 
+static void check_rtsp_url_resolves_current_ip_from_camera_mac(void)
+{
+    const char *arp_path = "/tmp/amtech_test_arp_table.txt";
+    char resolved_url[256];
+    FILE *fp;
+
+    fp = fopen(arp_path, "w");
+    if (fp == NULL)
+    {
+        printf("FAIL: could not write fake ARP table\n");
+        failures++;
+        return;
+    }
+    fprintf(fp, "IP address       HW type     Flags       HW address            Mask     Device\n");
+    fprintf(fp, "192.168.0.44     0x1         0x2         aa:bb:cc:dd:ee:01     *        wlan0\n");
+    fprintf(fp, "192.168.0.45     0x1         0x2         aa:bb:cc:dd:ee:02     *        wlan0\n");
+    fclose(fp);
+
+    setenv("AMTECH_ARP_TABLE_PATH", arp_path, 1);
+    check_int("MAC resolver rewrites RTSP host",
+              camera_detection_resolve_rtsp_url_for_mac("rtsp://user:pass@192.168.0.4:554/stream1",
+                                                         "AA-BB-CC-DD-EE-01",
+                                                         resolved_url,
+                                                         sizeof(resolved_url)),
+              1);
+    check_int("MAC resolver keeps credentials/path and updates IP",
+              strcmp(resolved_url, "rtsp://user:pass@192.168.0.44:554/stream1") == 0,
+              1);
+
+    check_int("unknown MAC leaves RTSP URL usable",
+              camera_detection_resolve_rtsp_url_for_mac("rtsp://user:pass@192.168.0.4:554/stream1",
+                                                         "aa:bb:cc:dd:ee:99",
+                                                         resolved_url,
+                                                         sizeof(resolved_url)),
+              0);
+    check_int("unknown MAC keeps original RTSP URL",
+              strcmp(resolved_url, "rtsp://user:pass@192.168.0.4:554/stream1") == 0,
+              1);
+
+    unsetenv("AMTECH_ARP_TABLE_PATH");
+    remove(arp_path);
+}
+
 int main(void)
 {
     check_camera_source_tags();
@@ -357,6 +401,7 @@ int main(void)
     check_static_zones_are_independent_per_camera();
     check_camera_detection_pauses_while_disarmed();
     check_legacy_camera_wrapper();
+    check_rtsp_url_resolves_current_ip_from_camera_mac();
 
     if (failures == 0)
     {

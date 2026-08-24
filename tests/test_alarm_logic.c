@@ -108,18 +108,18 @@ static void check_panic_retrigger_and_alert_dispatch_cooldown(void)
 #endif
     wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
-    check_int("panic trigger after cooldown sends SMS",
+    check_int("panic trigger after cooldown suppresses SMS while call escalation is still active",
               modem_get_simulated_sms_count(),
-               6);
+               3);
 #endif
 
     alarm_logic_reset();
     alarm_logic_handle_panic(1);
     wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
-    check_int("reset clears SIM alert cooldown",
+    check_int("reset clears SIM alert cooldown and active escalation suppression",
               modem_get_simulated_sms_count(),
-               9);
+               6);
 #endif
 }
 
@@ -262,6 +262,7 @@ static void check_shutter_retrigger(void)
 
     alarm_logic_handle_shutter_dual(SHUTTER_OPEN);
     check_int("shutter first trigger sets active alarm", alarm_logic_is_triggered(), 1);
+    check_int("shutter first trigger auto-disarms system", alarm_logic_is_armed(), 0);
 #ifdef SIMULATE_GPIO
     check_int("shutter first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
     check_int("shutter first trigger turns strobe ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
@@ -274,6 +275,7 @@ static void check_shutter_retrigger(void)
     check_int("shutter first trigger strobe stays ON/LOW", gpio_get_simulated_value(TEST_STROBE_GPIO_PIN), 0);
 #endif
 
+    alarm_logic_set_armed(1);
     alarm_logic_handle_shutter_dual(SHUTTER_OPEN);
 #ifdef SIMULATE_GPIO
     check_int("shutter second trigger restarts siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
@@ -316,6 +318,7 @@ static void check_person_retrigger(void)
     check_int("person first frame does not trigger with 2-frame confirmation", alarm_logic_is_triggered(), 0);
     send_person_frame();
     check_int("person second frame triggers active alarm", alarm_logic_is_triggered(), 1);
+    check_int("person trigger auto-disarms system", alarm_logic_is_armed(), 0);
 #ifdef SIMULATE_GPIO
     check_int("person first trigger turns siren ON/LOW", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 0);
 #endif
@@ -326,6 +329,8 @@ static void check_person_retrigger(void)
     check_int("person first trigger siren auto-stops", gpio_get_simulated_value(TEST_SIREN_GPIO_PIN), 1);
 #endif
 
+    alarm_logic_set_armed(1);
+    expire_camera_arm_grace();
     send_two_person_frames();
 #ifdef SIMULATE_GPIO
     check_int("person second 2-frame trigger restarts siren ON/LOW",
@@ -366,6 +371,9 @@ static void check_camera_sources_confirm_independently(void)
     check_int("second front frame triggers front intrusion",
               alarm_logic_is_triggered(),
               1);
+    check_int("front camera trigger auto-disarms system",
+              alarm_logic_is_armed(),
+              0);
     wait_alert_dispatch();
 #ifdef SIMULATE_MODEM
     check_int("front camera source sends SMS fan-out",
@@ -373,7 +381,7 @@ static void check_camera_sources_confirm_independently(void)
               3);
     check_int("front camera source message selected",
               strcmp(modem_get_simulated_last_sms_message(),
-                     "AMTECH ALERT: Person detected on the front camera while armed.") == 0,
+                     "AMTECH ALERT: Person detected on the front camera. System temporarily disarmed; will re-arm after siren stops.") == 0,
               1);
 #endif
 
@@ -398,7 +406,7 @@ static void check_camera_sources_confirm_independently(void)
 #ifdef SIMULATE_MODEM
     check_int("parking camera source message selected",
               strcmp(modem_get_simulated_last_sms_message(),
-                     "AMTECH ALERT: Person detected on the parking camera while armed.") == 0,
+                     "AMTECH ALERT: Person detected on the parking camera. System temporarily disarmed; will re-arm after siren stops.") == 0,
               1);
 #endif
 }
@@ -522,8 +530,11 @@ static void check_call_state_ticks_without_blocking_alarm_flow(void)
 #endif
 
     alarm_logic_tick(44000);
-    check_int("voice escalation remains active after first no-answer timeout", modem_voice_call_is_active(), 1);
-    alarm_logic_tick(1000);
+    check_int("voice escalation enters retry gap after first no-answer timeout",
+              alert_dispatch_get_call_escalation_state(),
+              ALERT_CALL_ESCALATION_RETRY_GAP);
+    check_int("voice call is hung up during retry gap", modem_voice_call_is_active(), 0);
+    alarm_logic_tick(5000);
     check_int("voice escalation continues with next attempt", modem_voice_call_is_active(), 1);
 #ifdef SIMULATE_MODEM
     check_int("voice escalation hung up first unanswered attempt", modem_get_simulated_hangup_count(), 1);

@@ -15,8 +15,18 @@
 #define ALERT_CALL_ATTEMPTS_PER_CONTACT 2
 #define ALERT_CALL_ATTEMPT_TIMEOUT_MS 30000U
 #define ALERT_CALL_ANSWER_CONFIRM_MS 3000U
+#define AMTECH_CALL_RETRY_GAP_MS 5000U
 #define AMTECH_VOICEMAIL_SUSPECT_MS 2000U
 #define ALERT_DISPATCH_EVENT_TYPE_MAX 32
+#define ALERT_DISPATCH_MESSAGE_MAX 256
+
+typedef struct
+{
+    char event_type[ALERT_DISPATCH_EVENT_TYPE_MAX];
+    char message[ALERT_DISPATCH_MESSAGE_MAX];
+    char contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
+    unsigned int generation;
+} alert_sms_fanout_request_t;
 
 static alert_call_escalation_state_t escalation_state = ALERT_CALL_ESCALATION_IDLE;
 static char escalation_contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX];
@@ -24,6 +34,7 @@ static int escalation_contact_index = 0;
 static int escalation_attempt = 0;
 static unsigned int escalation_attempt_elapsed_ms = 0;
 static unsigned int escalation_active_elapsed_ms = 0;
+static unsigned int escalation_retry_gap_elapsed_ms = 0;
 static int escalation_active_seen = 0;
 static int escalation_fast_active_suspected = 0;
 static pthread_mutex_t escalation_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -36,6 +47,10 @@ static int dispatch_worker_busy = 0;
 static unsigned int dispatch_reset_generation = 0;
 static unsigned int dispatch_worker_generation = 0;
 static char dispatch_worker_event_type[ALERT_DISPATCH_EVENT_TYPE_MAX];
+
+static pthread_mutex_t sms_worker_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sms_worker_cond = PTHREAD_COND_INITIALIZER;
+static int sms_worker_active_count = 0;
 
 #ifdef SIMULATE_MODEM
 static unsigned int simulated_dispatch_delay_ms = 0;
@@ -52,6 +67,21 @@ static void sleep_ms(unsigned int delay_ms)
 #endif
 
 static unsigned int current_dispatch_generation(void);
+
+static void mark_sms_worker_active(int active)
+{
+    pthread_mutex_lock(&sms_worker_mutex);
+    if (active)
+    {
+        sms_worker_active_count++;
+    }
+    else if (sms_worker_active_count > 0)
+    {
+        sms_worker_active_count--;
+    }
+    pthread_cond_broadcast(&sms_worker_cond);
+    pthread_mutex_unlock(&sms_worker_mutex);
+}
 
 static const char *alert_config_path(void)
 {
@@ -94,17 +124,17 @@ const char *alert_dispatch_message_for_event(const char *event_type)
 
     if (strcmp(event_type, "intrusion") == 0)
     {
-        return "AMTECH ALERT: Person detected inside your shop while armed.";
+        return "AMTECH ALERT: Person detected inside your shop. System temporarily disarmed; will re-arm after siren stops.";
     }
 
     if (strcmp(event_type, "intrusion-front") == 0)
     {
-        return "AMTECH ALERT: Person detected on the front camera while armed.";
+        return "AMTECH ALERT: Person detected on the front camera. System temporarily disarmed; will re-arm after siren stops.";
     }
 
     if (strcmp(event_type, "intrusion-parking") == 0)
     {
-        return "AMTECH ALERT: Person detected on the parking camera while armed.";
+        return "AMTECH ALERT: Person detected on the parking camera. System temporarily disarmed; will re-arm after siren stops.";
     }
 
     if (strcmp(event_type, "smoke") == 0)
@@ -129,6 +159,7 @@ static void clear_escalation(void)
     escalation_attempt = 0;
     escalation_attempt_elapsed_ms = 0;
     escalation_active_elapsed_ms = 0;
+    escalation_retry_gap_elapsed_ms = 0;
     escalation_active_seen = 0;
     escalation_fast_active_suspected = 0;
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
@@ -141,8 +172,33 @@ static void reset_current_attempt_timing(void)
 {
     escalation_attempt_elapsed_ms = 0;
     escalation_active_elapsed_ms = 0;
+    escalation_retry_gap_elapsed_ms = 0;
     escalation_active_seen = 0;
     escalation_fast_active_suspected = 0;
+}
+
+static int escalation_state_is_active(alert_call_escalation_state_t state)
+{
+    return state == ALERT_CALL_ESCALATION_WAITING ||
+           state == ALERT_CALL_ESCALATION_CONFIRMING_ANSWER ||
+           state == ALERT_CALL_ESCALATION_RETRY_GAP;
+}
+
+static void move_to_next_attempt_with_settle_gap(void)
+{
+    escalation_attempt++;
+    if (escalation_attempt >= ALERT_CALL_ATTEMPTS_PER_CONTACT)
+    {
+        escalation_contact_index++;
+        escalation_attempt = 0;
+    }
+
+    escalation_state = ALERT_CALL_ESCALATION_RETRY_GAP;
+    escalation_retry_gap_elapsed_ms = 0;
+    reset_current_attempt_timing();
+    amtech_logf("Alert dispatch",
+                "waiting %u ms and settling modem before next call attempt",
+                AMTECH_CALL_RETRY_GAP_MS);
 }
 
 static int start_current_call_attempt(void)
@@ -182,17 +238,101 @@ static int start_current_call_attempt(void)
                     escalation_contact_index + 1,
                     escalation_attempt + 1);
 
-        escalation_attempt++;
-        if (escalation_attempt >= ALERT_CALL_ATTEMPTS_PER_CONTACT)
-        {
-            escalation_contact_index++;
-            escalation_attempt = 0;
-        }
+        move_to_next_attempt_with_settle_gap();
+        return 0;
     }
 
     escalation_state = ALERT_CALL_ESCALATION_DONE;
     reset_current_attempt_timing();
     amtech_logf("Alert dispatch", "call escalation complete, no more contacts");
+    return 0;
+}
+
+static void *sms_fanout_worker_main(void *arg)
+{
+    alert_sms_fanout_request_t *request = (alert_sms_fanout_request_t *)arg;
+    int i;
+
+    if (request == NULL)
+    {
+        return NULL;
+    }
+
+    amtech_logf("Alert dispatch",
+                "sending %s alert SMS to all configured contacts",
+                request->event_type);
+
+    for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
+    {
+        if (!contact_is_configured(request->contacts[i]))
+        {
+            continue;
+        }
+
+        if (current_dispatch_generation() != request->generation)
+        {
+            amtech_logf("Alert dispatch",
+                        "SMS fan-out for %s canceled because incident reset",
+                        request->event_type);
+            break;
+        }
+
+        if (modem_send_sms(request->contacts[i], request->message) != 0)
+        {
+            amtech_logf("Alert dispatch",
+                        "SMS failed for contact %d on %s",
+                        i + 1,
+                        request->event_type);
+        }
+    }
+
+    free(request);
+    mark_sms_worker_active(0);
+    return NULL;
+}
+
+static int start_sms_fanout(const char *event_type,
+                            const char *message,
+                            char contacts[AMTECH_ALERT_CONTACT_COUNT][AMTECH_ALERT_CONTACT_NUMBER_MAX],
+                            unsigned int generation)
+{
+    alert_sms_fanout_request_t *request;
+    pthread_t thread;
+    int rc;
+    int i;
+
+    request = (alert_sms_fanout_request_t *)calloc(1, sizeof(*request));
+    if (request == NULL)
+    {
+        amtech_logf("Alert dispatch", "failed to allocate SMS fan-out request");
+        return -1;
+    }
+
+    snprintf(request->event_type,
+             sizeof(request->event_type),
+             "%s",
+             event_type != NULL && event_type[0] != '\0' ? event_type : "unknown");
+    snprintf(request->message, sizeof(request->message), "%s", message);
+    request->generation = generation;
+    for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
+    {
+        snprintf(request->contacts[i],
+                 sizeof(request->contacts[i]),
+                 "%s",
+                 contacts[i]);
+    }
+
+    mark_sms_worker_active(1);
+    rc = pthread_create(&thread, NULL, sms_fanout_worker_main, request);
+    if (rc != 0)
+    {
+        mark_sms_worker_active(0);
+        free(request);
+        amtech_logf("Alert dispatch", "failed to start SMS fan-out worker: %s", strerror(rc));
+        return -1;
+    }
+
+    pthread_detach(thread);
     return 0;
 }
 
@@ -203,14 +343,8 @@ static int advance_to_next_call_attempt(void)
         modem_hangup_voice_call();
     }
 
-    escalation_attempt++;
-    if (escalation_attempt >= ALERT_CALL_ATTEMPTS_PER_CONTACT)
-    {
-        escalation_contact_index++;
-        escalation_attempt = 0;
-    }
-
-    return start_current_call_attempt();
+    move_to_next_attempt_with_settle_gap();
+    return 0;
 }
 
 static int alert_dispatch_send_with_generation(const char *event_type, unsigned int start_generation)
@@ -230,15 +364,12 @@ static int alert_dispatch_send_with_generation(const char *event_type, unsigned 
     if (current_dispatch_generation() != start_generation)
     {
         amtech_logf("Alert dispatch",
-                    "dispatch for %s canceled before SMS because incident reset",
+                    "dispatch for %s canceled before call/SMS because incident reset",
                     event_type != NULL ? event_type : "unknown");
         return -1;
     }
 
     message = alert_dispatch_message_for_event(event_type);
-    amtech_logf("Alert dispatch",
-                "sending %s alert SMS to all configured contacts",
-                event_type != NULL ? event_type : "unknown");
 
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
     {
@@ -246,31 +377,20 @@ static int alert_dispatch_send_with_generation(const char *event_type, unsigned 
                  sizeof(local_contacts[i]),
                  "%s",
                  config.alert_contacts[i]);
-
-        if (!contact_is_configured(config.alert_contacts[i]))
-        {
-            continue;
-        }
-
-        if (modem_send_sms(config.alert_contacts[i], message) != 0)
-        {
-            amtech_logf("Alert dispatch",
-                        "SMS failed for contact %d on %s",
-                        i + 1,
-                        event_type != NULL ? event_type : "unknown");
-            result = -1;
-        }
-    }
-
-    if (current_dispatch_generation() != start_generation)
-    {
-        amtech_logf("Alert dispatch",
-                    "dispatch for %s canceled before voice escalation because incident reset",
-                    event_type != NULL ? event_type : "unknown");
-        return -1;
     }
 
     pthread_mutex_lock(&escalation_mutex);
+    if (escalation_state_is_active(escalation_state))
+    {
+        amtech_logf("Alert dispatch",
+                    "call escalation already active at contact %d attempt %d; suppressing new dispatch for %s",
+                    escalation_contact_index + 1,
+                    escalation_attempt + 1,
+                    event_type != NULL ? event_type : "unknown");
+        pthread_mutex_unlock(&escalation_mutex);
+        return -1;
+    }
+
     modem_hangup_voice_call();
     clear_escalation();
     for (i = 0; i < AMTECH_ALERT_CONTACT_COUNT; i++)
@@ -289,6 +409,16 @@ static int alert_dispatch_send_with_generation(const char *event_type, unsigned 
         result = -1;
     }
     pthread_mutex_unlock(&escalation_mutex);
+
+    /*
+     * Voice escalation is started before SMS fan-out so a slow/failed SMS path
+     * cannot delay the first emergency call. SMS still goes to every configured
+     * contact once, but it runs on its own worker.
+     */
+    if (start_sms_fanout(event_type, message, local_contacts, start_generation) != 0)
+    {
+        result = -1;
+    }
 
     return result;
 }
@@ -389,6 +519,19 @@ int alert_dispatch_request_async(const char *event_type)
         return -1;
     }
 
+    pthread_mutex_lock(&escalation_mutex);
+    if (escalation_state_is_active(escalation_state))
+    {
+        amtech_logf("Alert dispatch",
+                    "call escalation already active at contact %d attempt %d; suppressing async request for %s",
+                    escalation_contact_index + 1,
+                    escalation_attempt + 1,
+                    event_type);
+        pthread_mutex_unlock(&escalation_mutex);
+        return -1;
+    }
+    pthread_mutex_unlock(&escalation_mutex);
+
     pthread_mutex_lock(&dispatch_worker_mutex);
     if (dispatch_worker_pending || dispatch_worker_busy)
     {
@@ -424,6 +567,38 @@ void alert_dispatch_tick(unsigned int elapsed_ms)
         escalation_state == ALERT_CALL_ESCALATION_DONE ||
         escalation_state == ALERT_CALL_ESCALATION_FAILED)
     {
+        pthread_mutex_unlock(&escalation_mutex);
+        return;
+    }
+
+    if (escalation_state == ALERT_CALL_ESCALATION_RETRY_GAP)
+    {
+        if (elapsed_ms > AMTECH_CALL_RETRY_GAP_MS - escalation_retry_gap_elapsed_ms)
+        {
+            escalation_retry_gap_elapsed_ms = AMTECH_CALL_RETRY_GAP_MS;
+        }
+        else
+        {
+            escalation_retry_gap_elapsed_ms += elapsed_ms;
+        }
+
+        if (escalation_retry_gap_elapsed_ms < AMTECH_CALL_RETRY_GAP_MS)
+        {
+            pthread_mutex_unlock(&escalation_mutex);
+            return;
+        }
+
+        if (modem_prepare_for_next_voice_call() != 0)
+        {
+            escalation_retry_gap_elapsed_ms = 0;
+            amtech_logf("Alert dispatch",
+                        "modem not settled for next call yet; retrying settle in %u ms",
+                        AMTECH_CALL_RETRY_GAP_MS);
+            pthread_mutex_unlock(&escalation_mutex);
+            return;
+        }
+
+        start_current_call_attempt();
         pthread_mutex_unlock(&escalation_mutex);
         return;
     }
@@ -585,6 +760,11 @@ int alert_dispatch_test_wait_idle(unsigned int timeout_ms)
         pthread_mutex_lock(&dispatch_worker_mutex);
         idle = !dispatch_worker_pending && !dispatch_worker_busy;
         pthread_mutex_unlock(&dispatch_worker_mutex);
+
+        pthread_mutex_lock(&sms_worker_mutex);
+        idle = idle && sms_worker_active_count == 0;
+        pthread_mutex_unlock(&sms_worker_mutex);
+
         if (idle)
         {
             return 0;

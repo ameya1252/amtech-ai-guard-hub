@@ -35,6 +35,8 @@ static long long siren_stop_deadline_ms = 0;
 static pthread_mutex_t siren_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t siren_timer_cond = PTHREAD_COND_INITIALIZER;
 static int siren_timer_thread_started = 0;
+static alarm_logic_siren_auto_stop_callback_t siren_auto_stop_callback = NULL;
+static void *siren_auto_stop_user_data = NULL;
 static int alert_dispatch_sent_this_incident = 0;
 static unsigned int alert_dispatch_elapsed_ms = 0;
 static unsigned int camera_arm_grace_elapsed_ms = AMTECH_CAMERA_ARM_GRACE_MS;
@@ -103,8 +105,15 @@ static void *siren_timer_thread_main(void *arg)
         siren_active = 0;
         siren_elapsed_ms = AMTECH_SIREN_DURATION_MS;
         siren_stop_deadline_ms = 0;
+        alarm_logic_siren_auto_stop_callback_t callback = siren_auto_stop_callback;
+        void *callback_user_data = siren_auto_stop_user_data;
+
         pthread_mutex_unlock(&siren_timer_mutex);
         amtech_logf("Alarm", "siren auto-stopped after %u ms wall-clock deadline", AMTECH_SIREN_DURATION_MS);
+        if (callback != NULL)
+        {
+            callback(callback_user_data);
+        }
     }
 
     return NULL;
@@ -272,6 +281,15 @@ void alarm_logic_set_shop_id(const char *shop_id)
     amtech_logf("Alarm", "shop_id set to %s", alarm_shop_id);
 }
 
+void alarm_logic_set_siren_auto_stop_callback(alarm_logic_siren_auto_stop_callback_t callback,
+                                              void *user_data)
+{
+    pthread_mutex_lock(&siren_timer_mutex);
+    siren_auto_stop_callback = callback;
+    siren_auto_stop_user_data = user_data;
+    pthread_mutex_unlock(&siren_timer_mutex);
+}
+
 void alarm_logic_set_armed(int next_armed)
 {
     int normalized_armed = next_armed ? 1 : 0;
@@ -337,6 +355,18 @@ void trigger_alarm(void)
     else
     {
         amtech_logf("Alarm", "alert dispatch suppressed by cooldown");
+    }
+
+    if (armed)
+    {
+        /*
+         * An alarm event now leaves the incident machinery running, but prevents
+         * additional armed-mode triggers until the owner explicitly arms again.
+         * Do not call alarm_logic_reset() here: reset would silence siren/strobe
+         * and cancel the active call/SMS escalation.
+         */
+        alarm_logic_set_armed(0);
+        amtech_logf("Alarm", "system temporarily auto-disarmed after event=%s; siren/call/SMS continue", event_type);
     }
 }
 

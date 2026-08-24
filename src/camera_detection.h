@@ -29,6 +29,16 @@ int camera_detection_run_once_for_source(const char *source,
                                          const char *rtsp_url,
                                          pthread_mutex_t *inference_mutex,
                                          camera_detection_result_t *result);
+int camera_detection_run_once_for_source_with_mac(const char *source,
+                                                  const char *event_type,
+                                                  const char *rtsp_url,
+                                                  const char *camera_mac,
+                                                  pthread_mutex_t *inference_mutex,
+                                                  camera_detection_result_t *result);
+int camera_detection_resolve_rtsp_url_for_mac(const char *rtsp_url,
+                                              const char *camera_mac,
+                                              char *resolved_url,
+                                              unsigned int resolved_url_size);
 
 #ifdef SIMULATE_CAMERA
 void camera_detection_set_simulated_result(int person_detected, float confidence);

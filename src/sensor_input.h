@@ -19,6 +19,7 @@ typedef enum
 } shutter_state_t;
 
 int sensor_input_init(int pin);
+int sensor_input_read_raw(int pin);
 int sensor_input_read(int pin);
 shutter_state_t shutter_read_dual_state(int nc_pin, int no_pin);
 const char *shutter_state_to_string(shutter_state_t state);

@@ -27,6 +27,7 @@ typedef struct
     const char *source;
     const char *event_type;
     const char *rtsp_url;
+    const char *camera_mac;
 } runtime_camera_config_t;
 
 int runtime_build_watched_pins(const amtech_config_t *config,
@@ -36,6 +37,7 @@ int runtime_build_camera_configs(const amtech_config_t *config,
                                  runtime_camera_config_t cameras[],
                                  int max_cameras);
 int runtime_process_configured_shutters(const amtech_config_t *config);
+int runtime_arm_preflight_check(const amtech_config_t *config, char *detail, size_t detail_size);
 void runtime_process_camera_detection_result(const camera_detection_result_t *result);
 int runtime_poll_sms_remote_control(const amtech_config_t *config);
 int runtime_panic_triggered_from_raw(int raw_value);
@@ -53,6 +55,7 @@ void runtime_test_apply_schedule_armed(int armed);
 void runtime_test_apply_schedule_armed_with_config(int armed, const amtech_config_t *config);
 void runtime_test_apply_app_command(amtech_device_command_type_t command, const amtech_config_t *config);
 void runtime_test_tick(unsigned int elapsed_ms);
+void runtime_test_tick_with_config(unsigned int elapsed_ms, const amtech_config_t *config);
 int runtime_test_static_calibration_active(void);
 void runtime_test_note_camera_health(const char *source, int success);
 int runtime_test_camera_detection_should_run(void);

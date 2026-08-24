@@ -53,6 +53,22 @@ static void check_contains(const char *label, const char *actual, const char *ex
     }
 }
 
+static void check_not_contains(const char *label, const char *actual, const char *unexpected_substring)
+{
+    int matches = strstr(actual, unexpected_substring) == NULL;
+    const char *result = matches ? "PASS" : "FAIL";
+
+    printf("%s: got %s, unexpected substring %s: %s\n",
+           label,
+           actual,
+           unexpected_substring,
+           result);
+    if (!matches)
+    {
+        failures++;
+    }
+}
+
 static void check_shutter_state(const char *label, shutter_state_t actual, shutter_state_t expected)
 {
     const char *result = actual == expected ? "PASS" : "FAIL";
@@ -81,6 +97,23 @@ static int contains_pin(runtime_watched_pin_t pins[], int count, int pin)
     }
 
     return 0;
+}
+
+static void set_all_configured_sensors_normal(const amtech_config_t *config)
+{
+#ifdef SIMULATE_GPIO
+    sensor_input_set_simulated_raw_value(33, 0);
+    sensor_input_set_simulated_raw_value(40, 1);
+    if (config != NULL && config->shutter_count >= 2)
+    {
+        sensor_input_set_simulated_raw_value(41, 0);
+        sensor_input_set_simulated_raw_value(72, 1);
+    }
+    sensor_input_set_simulated_raw_value(32, 0);
+    sensor_input_set_simulated_raw_value(54, 1);
+#else
+    (void)config;
+#endif
 }
 
 static const char *edge_for_pin(runtime_watched_pin_t pins[], int count, int pin)
@@ -122,12 +155,14 @@ static void check_pin_edge(runtime_watched_pin_t pins[],
 static void check_camera_config(const runtime_camera_config_t *camera,
                                 const char *expected_source,
                                 const char *expected_event_type,
-                                const char *expected_url)
+                                const char *expected_url,
+                                const char *expected_mac)
 {
     check_int("camera config enabled", camera->enabled, 1);
     check_string("camera config source", camera->source, expected_source);
     check_string("camera config event type", camera->event_type, expected_event_type);
     check_string("camera config RTSP URL", camera->rtsp_url, expected_url);
+    check_string("camera config MAC", camera->camera_mac, expected_mac);
 }
 
 static void check_shutter2_ignored_when_single_shutter(void)
@@ -280,6 +315,7 @@ static void check_sms_remote_control(void)
     modem_reset_simulated_state();
     alarm_logic_init(42);
     alarm_logic_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
     check_int("SMS receive init succeeds", modem_sms_receive_init(), 0);
     check_int("SMS receive init count", modem_get_simulated_sms_receive_init_count(), 1);
@@ -288,14 +324,18 @@ static void check_sms_remote_control(void)
     check_int("contact 1 ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("contact 1 ARM sets armed", alarm_logic_is_armed(), 1);
     check_int("contact 1 ARM sends confirmation SMS", modem_get_simulated_sms_count(), 1);
-    check_string("contact 1 ARM reply text", modem_get_simulated_last_sms_message(), "System ARMING...");
+    check_string("contact 1 ARM reply text",
+                 modem_get_simulated_last_sms_message(),
+                 "AMTECH NETTRA: ARMING\nSensors active. Cameras calibrating.");
     check_int("contact 1 ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 1);
 
     modem_simulate_incoming_sms("911111111111", "arm");
     check_int("redundant ARM SMS accepted from 91-prefixed sender", runtime_poll_sms_remote_control(&config), 1);
     check_int("redundant ARM leaves armed", alarm_logic_is_armed(), 1);
     check_int("redundant ARM sends confirmation SMS", modem_get_simulated_sms_count(), 2);
-    check_string("redundant ARM reply text", modem_get_simulated_last_sms_message(), "System already ARMED");
+    check_string("redundant ARM reply text",
+                 modem_get_simulated_last_sms_message(),
+                 "AMTECH NETTRA: already ARMED");
     check_int("redundant ARM SMS deleted", modem_get_simulated_deleted_sms_count(), 2);
 
     modem_simulate_incoming_sms("2222222222", "  disarm \r\n");
@@ -352,13 +392,16 @@ static void check_sms_remote_control(void)
     modem_simulate_incoming_sms("+911111111111", "status");
     check_int("STATUS SMS accepted from authorized sender", runtime_poll_sms_remote_control(&config), 1);
     check_int("STATUS sends reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 3);
-    check_contains("STATUS starts with armed state", modem_get_simulated_last_sms_message(), "DISARMED; Panic cfg");
-    check_contains("STATUS includes shutter-1 configured", modem_get_simulated_last_sms_message(), "Sh1 cfg");
-    check_contains("STATUS includes shutter-2 configured", modem_get_simulated_last_sms_message(), "Sh2 cfg");
-    check_contains("STATUS includes smoke configured", modem_get_simulated_last_sms_message(), "Smoke cfg");
-    check_contains("STATUS includes front camera recent OK", modem_get_simulated_last_sms_message(), "Front cam recent OK");
-    check_contains("STATUS includes parking camera failing", modem_get_simulated_last_sms_message(), "Parking cam failing");
-    check_contains("STATUS includes modem last-known state", modem_get_simulated_last_sms_message(), "Modem POWER_OFF last-known");
+    check_contains("STATUS starts with branded disarmed state",
+                   modem_get_simulated_last_sms_message(),
+                   "AMTECH NETTRA: DISARMED");
+    check_contains("STATUS includes panic ready", modem_get_simulated_last_sms_message(), "Panic: Ready");
+    check_contains("STATUS includes shutter-1 closed", modem_get_simulated_last_sms_message(), "Sh1: Closed");
+    check_contains("STATUS includes shutter-2 closed", modem_get_simulated_last_sms_message(), "Sh2: Closed");
+    check_contains("STATUS includes smoke normal", modem_get_simulated_last_sms_message(), "Smoke: Normal");
+    check_contains("STATUS includes front camera live AI off", modem_get_simulated_last_sms_message(), "Cam1: Live, AI Off");
+    check_contains("STATUS includes parking camera live AI off", modem_get_simulated_last_sms_message(), "Cam2: Live, AI Off");
+    check_contains("STATUS includes modem check", modem_get_simulated_last_sms_message(), "Modem: Check");
     check_int("STATUS SMS deleted", modem_get_simulated_deleted_sms_count(), 8);
 
     config.shutter_count = 1;
@@ -370,48 +413,66 @@ static void check_sms_remote_control(void)
     modem_simulate_incoming_sms("+912222222222", "STATUS");
     check_int("STATUS SMS accepted with disabled optional devices", runtime_poll_sms_remote_control(&config), 1);
     check_int("STATUS disabled-device reply count", modem_get_simulated_sms_count(), sms_count_after_trigger + 4);
-    check_contains("STATUS reports shutter-2 off", modem_get_simulated_last_sms_message(), "Sh2 off");
-    check_contains("STATUS reports smoke off", modem_get_simulated_last_sms_message(), "Smoke off");
-    check_contains("STATUS reports camera2 off", modem_get_simulated_last_sms_message(), "Parking cam off");
+    check_contains("STATUS still includes shutter-1", modem_get_simulated_last_sms_message(), "Sh1: Closed");
+    check_contains("STATUS still includes camera1", modem_get_simulated_last_sms_message(), "Cam1: Live, AI Off");
+    check_not_contains("STATUS omits unconfigured shutter-2", modem_get_simulated_last_sms_message(), "Sh2:");
+    check_not_contains("STATUS omits unconfigured smoke", modem_get_simulated_last_sms_message(), "Smoke:");
+    check_not_contains("STATUS omits unconfigured camera2", modem_get_simulated_last_sms_message(), "Cam2:");
     check_int("STATUS disabled-device SMS deleted", modem_get_simulated_deleted_sms_count(), 9);
+
+    {
+        int sms_failures[] = {-1, -1};
+
+        modem_set_simulated_sms_send_results(sms_failures, 2);
+        check_int("setup SMS TX fault", modem_send_sms("+919999999999", "force failure"), -1);
+        check_int("SMS TX fault active before STATUS", modem_sms_tx_fault_active(), 1);
+        modem_set_simulated_sms_send_results(NULL, 0);
+    }
+
+    modem_simulate_incoming_sms("+912222222222", "STATUS");
+    check_int("STATUS SMS accepted while SMS TX fault active", runtime_poll_sms_remote_control(&config), 1);
+    check_int("STATUS SMS TX fault reply count", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
+    check_contains("STATUS reports SMS TX fault", modem_get_simulated_last_sms_message(), "Modem: Check | SMS TX FAULT");
+    check_int("STATUS reply success clears SMS TX fault", modem_sms_tx_fault_active(), 0);
+    check_int("STATUS SMS TX fault SMS deleted", modem_get_simulated_deleted_sms_count(), 10);
 
     modem_simulate_incoming_sms("+913333333333", "HeLp");
     check_int("HELP SMS accepted from authorized sender", runtime_poll_sms_remote_control(&config), 1);
-    check_int("HELP sends reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
+    check_int("HELP sends reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 6);
     check_contains("HELP includes ARM", modem_get_simulated_last_sms_message(), "ARM - Arm system");
     check_contains("HELP includes DISARM", modem_get_simulated_last_sms_message(), "DISARM - Disarm system");
     check_contains("HELP includes STOP", modem_get_simulated_last_sms_message(), "STOP - Stop active alarm & disarm");
-    check_contains("HELP includes STATUS", modem_get_simulated_last_sms_message(), "STATUS - System status report");
+    check_contains("HELP includes STATUS", modem_get_simulated_last_sms_message(), "STATUS - System status");
     check_contains("HELP includes HELP", modem_get_simulated_last_sms_message(), "HELP - This message");
-    check_int("HELP SMS deleted", modem_get_simulated_deleted_sms_count(), 10);
+    check_int("HELP SMS deleted", modem_get_simulated_deleted_sms_count(), 11);
 
     alarm_logic_set_armed(1);
 
     modem_simulate_incoming_sms("+919999999999", "HELP");
     check_int("unknown sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
     check_int("unknown sender does not change armed state", alarm_logic_is_armed(), 1);
-    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
-    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 11);
+    check_int("unknown sender gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 6);
+    check_int("unknown sender SMS still deleted", modem_get_simulated_deleted_sms_count(), 12);
 
     modem_simulate_incoming_sms("+911111111111", "BANANA");
     check_int("malformed valid-sender SMS ignored", runtime_poll_sms_remote_control(&config), 0);
     check_int("malformed SMS leaves armed unchanged", alarm_logic_is_armed(), 1);
-    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 5);
-    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 12);
+    check_int("malformed SMS gets no reply", modem_get_simulated_sms_count(), sms_count_after_trigger + 6);
+    check_int("malformed SMS still deleted", modem_get_simulated_deleted_sms_count(), 13);
 
     modem_make_voice_call("+911111111111");
     modem_simulate_incoming_sms("+911111111111", "DISARM");
     check_int("SMS poll still runs while voice call active", runtime_poll_sms_remote_control(&config), 1);
-    check_int("SMS deleted while call active", modem_get_simulated_deleted_sms_count(), 13);
+    check_int("SMS deleted while call active", modem_get_simulated_deleted_sms_count(), 14);
     check_int("DISARM clears armed while call active", alarm_logic_is_armed(), 0);
-    check_int("DISARM reply sent while call active", modem_get_simulated_sms_count(), sms_count_after_trigger + 6);
+    check_int("DISARM reply sent while call active", modem_get_simulated_sms_count(), sms_count_after_trigger + 7);
     modem_hangup_voice_call();
 }
 
 static void check_sms_reply_failures_are_not_reported_as_sent(void)
 {
     amtech_config_t config;
-    int fail_once[1] = {-1};
+    int fail_twice[2] = {-1, -1};
 
     amtech_config_set_defaults(&config);
     snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
@@ -420,8 +481,9 @@ static void check_sms_reply_failures_are_not_reported_as_sent(void)
     modem_reset_simulated_state();
     alarm_logic_init(42);
     runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
-    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_set_simulated_sms_send_results(fail_twice, 2);
     modem_simulate_incoming_sms("+911111111111", "ARM");
     check_int("ARM command still applies when reply SMS fails",
               runtime_poll_sms_remote_control(&config),
@@ -430,7 +492,7 @@ static void check_sms_reply_failures_are_not_reported_as_sent(void)
     check_int("ARM failed reply is not counted as sent", modem_get_simulated_sms_count(), 0);
     check_int("ARM failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 1);
 
-    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_set_simulated_sms_send_results(fail_twice, 2);
     modem_simulate_incoming_sms("+911111111111", "DISARM");
     check_int("DISARM command still applies when reply SMS fails",
               runtime_poll_sms_remote_control(&config),
@@ -445,7 +507,7 @@ static void check_sms_reply_failures_are_not_reported_as_sent(void)
               alert_dispatch_test_wait_idle(2000),
               0);
     modem_reset_simulated_state();
-    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_set_simulated_sms_send_results(fail_twice, 2);
     modem_simulate_incoming_sms("+911111111111", "STOP");
     check_int("STOP command still applies when reply SMS fails",
               runtime_poll_sms_remote_control(&config),
@@ -453,12 +515,69 @@ static void check_sms_reply_failures_are_not_reported_as_sent(void)
     check_int("STOP command reset alarm despite reply failure", alarm_logic_is_triggered(), 0);
     check_int("STOP failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 1);
 
-    modem_set_simulated_sms_send_results(fail_once, 1);
+    modem_set_simulated_sms_send_results(fail_twice, 2);
     modem_simulate_incoming_sms("+911111111111", "STATUS");
     check_int("STATUS command still processed when reply SMS fails",
               runtime_poll_sms_remote_control(&config),
               1);
     check_int("STATUS failed-reply SMS still deleted", modem_get_simulated_deleted_sms_count(), 2);
+}
+
+static void check_arm_preflight_blocks_faulted_wired_sensors_unless_forced(void)
+{
+    amtech_config_t config;
+    char detail[192];
+
+    amtech_config_set_defaults(&config);
+    config.shutter_count = 2;
+    config.panic_enabled = 1;
+    config.smoke_enabled = 1;
+    snprintf(config.alert_contacts[0], sizeof(config.alert_contacts[0]), "%s", "+911111111111");
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
+
+    sensor_input_set_simulated_raw_value(33, 1);
+    sensor_input_set_simulated_raw_value(40, 1);
+    check_int("preflight detects shutter-1 tamper",
+              runtime_arm_preflight_check(&config, detail, sizeof(detail)),
+              -1);
+    check_contains("preflight detail names shutter-1 tamper", detail, "Sh1 tamper");
+
+    modem_simulate_incoming_sms("+911111111111", "ARM");
+    check_int("ARM with shutter tamper is processed", runtime_poll_sms_remote_control(&config), 1);
+    check_int("ARM with shutter tamper remains disarmed", alarm_logic_is_armed(), 0);
+    check_contains("ARM blocked reply uses Nettra brand",
+                   modem_get_simulated_last_sms_message(),
+                   "AMTECH NETTRA: ARM BLOCKED");
+    check_contains("ARM blocked reply includes force instruction",
+                   modem_get_simulated_last_sms_message(),
+                   "Send ARM FORCE to override.");
+
+    modem_simulate_incoming_sms("+911111111111", "ARM FORCE");
+    check_int("ARM FORCE SMS is processed", runtime_poll_sms_remote_control(&config), 1);
+    check_int("ARM FORCE bypasses preflight and arms", alarm_logic_is_armed(), 1);
+    check_contains("ARM FORCE reply indicates forced override",
+                   modem_get_simulated_last_sms_message(),
+                   "Forced override active");
+
+    runtime_test_set_armed(0);
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_ARM, &config);
+    check_int("app ARM still arms until backend supports visible blocked-result feedback",
+              alarm_logic_is_armed(),
+              1);
+    runtime_test_set_armed(0);
+
+    runtime_test_apply_schedule_armed_with_config(1, &config);
+    check_int("schedule ARM blocked by shutter tamper", alarm_logic_is_armed(), 0);
+
+    set_all_configured_sensors_normal(&config);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
+    check_int("schedule ARM succeeds after sensors are normal", alarm_logic_is_armed(), 1);
 }
 
 static void check_sms_manual_override_blocks_schedule_until_boundary(void)
@@ -472,41 +591,46 @@ static void check_sms_manual_override_blocks_schedule_until_boundary(void)
     modem_reset_simulated_state();
     alarm_logic_init(42);
     runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
     modem_simulate_incoming_sms("+911111111111", "ARM");
     check_int("manual override ARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("manual override ARM sets armed", alarm_logic_is_armed(), 1);
-    check_string("manual override immediate ARM reply", modem_get_simulated_last_sms_message(), "System ARMING...");
+    check_string("manual override immediate ARM reply",
+                 modem_get_simulated_last_sms_message(),
+                 "AMTECH NETTRA: ARMING\nSensors active. Cameras calibrating.");
 
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("schedule cannot immediately disarm SMS manual ARM", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("repeated same schedule state still cannot disarm SMS manual ARM", alarm_logic_is_armed(), 1);
 
     alarm_logic_handle_shutter_dual_named(SHUTTER_OPEN, "shutter-1", "shutter-1");
     check_int("shutter open triggers after SMS ARM despite schedule being disarmed", alarm_logic_is_triggered(), 1);
     alarm_logic_reset();
 
-    runtime_test_apply_schedule_armed(1);
+    set_all_configured_sensors_normal(&config);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("schedule boundary clears manual ARM override and keeps scheduled armed", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("normal schedule disarms after manual ARM override cleared", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("normal schedule-only arm still works without manual override", alarm_logic_is_armed(), 1);
 
     modem_simulate_incoming_sms("+911111111111", "DISARM");
     check_int("manual override DISARM SMS accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("manual override DISARM clears armed", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("schedule cannot immediately re-arm SMS manual DISARM", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("repeated same schedule state still cannot re-arm SMS manual DISARM", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("schedule boundary clears manual DISARM override and keeps scheduled disarmed", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(1);
+    set_all_configured_sensors_normal(&config);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("normal schedule arms after manual DISARM override cleared", alarm_logic_is_armed(), 1);
 }
 
@@ -520,39 +644,103 @@ static void check_app_command_manual_override_blocks_schedule_until_boundary(voi
     modem_reset_simulated_state();
     alarm_logic_init(42);
     runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
     runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_ARM, &config);
     check_int("app ARM command sets armed", alarm_logic_is_armed(), 1);
 
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("schedule cannot immediately disarm app manual ARM", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("repeated same schedule state still cannot disarm app manual ARM", alarm_logic_is_armed(), 1);
 
     alarm_logic_handle_shutter_dual_named(SHUTTER_OPEN, "shutter-1", "shutter-1");
     check_int("shutter open triggers after app ARM despite schedule being disarmed", alarm_logic_is_triggered(), 1);
     alarm_logic_reset();
 
-    runtime_test_apply_schedule_armed(1);
+    set_all_configured_sensors_normal(&config);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("schedule boundary clears app ARM override and keeps scheduled armed", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("normal schedule disarms after app ARM override cleared", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("normal schedule-only arm works before app DISARM", alarm_logic_is_armed(), 1);
 
     runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_DISARM, &config);
     check_int("app DISARM command clears armed", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("schedule cannot immediately re-arm app manual DISARM", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("repeated same schedule state still cannot re-arm app manual DISARM", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("schedule boundary clears app DISARM override and keeps scheduled disarmed", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(1);
+    set_all_configured_sensors_normal(&config);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("normal schedule arms after app DISARM override cleared", alarm_logic_is_armed(), 1);
+}
+
+static void check_alarm_auto_rearms_after_siren_stop_unless_canceled(void)
+{
+    amtech_config_t config;
+
+    amtech_config_set_defaults(&config);
+    config.shutter_count = 1;
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
+
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_ARM, &config);
+    check_int("auto-disarm test starts armed from app command", alarm_logic_is_armed(), 1);
+
+    sensor_input_set_simulated_raw_value(33, 1);
+    sensor_input_set_simulated_raw_value(40, 0);
+    check_int("configured shutter open is processed", runtime_process_configured_shutters(&config), 0);
+    check_int("configured shutter open triggers alarm", alarm_logic_is_triggered(), 1);
+    check_int("configured shutter alarm temporarily disarms system", alarm_logic_is_armed(), 0);
+#ifdef SIMULATE_GPIO
+    check_int("temporary disarm leaves siren ON/LOW", gpio_get_simulated_value(42), 0);
+    check_int("temporary disarm leaves strobe ON/LOW", gpio_get_simulated_value(48), 0);
+#endif
+
+    runtime_test_apply_schedule_armed(1);
+    check_int("same schedule state cannot re-arm before siren stops", alarm_logic_is_armed(), 0);
+    runtime_test_apply_schedule_armed(1);
+    check_int("repeated same schedule still cannot re-arm before siren stops", alarm_logic_is_armed(), 0);
+
+    set_all_configured_sensors_normal(&config);
+    check_int("force siren timeout for auto-rearm test", alarm_logic_test_force_siren_timeout(), 0);
+    runtime_test_tick_with_config(1, &config);
+    check_int("siren stop automatically re-arms system", alarm_logic_is_armed(), 1);
+    check_int("auto-rearm restarts camera static calibration",
+              runtime_test_static_calibration_active(),
+              1);
+
+    alarm_logic_reset();
+
+    gpio_reset_simulated_values();
+    modem_reset_simulated_state();
+    alarm_logic_init(42);
+    runtime_test_set_armed(1);
+
+    sensor_input_set_simulated_raw_value(33, 1);
+    sensor_input_set_simulated_raw_value(40, 0);
+    check_int("second shutter open is processed", runtime_process_configured_shutters(&config), 0);
+    check_int("second shutter open triggers alarm", alarm_logic_is_triggered(), 1);
+    check_int("second shutter temporarily disarms system", alarm_logic_is_armed(), 0);
+
+    runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_DISARM, &config);
+    check_int("app DISARM keeps system disarmed during pending auto-rearm", alarm_logic_is_armed(), 0);
+    check_int("force siren timeout after app DISARM", alarm_logic_test_force_siren_timeout(), 0);
+    runtime_test_tick(1);
+    check_int("app DISARM cancels automatic re-arm", alarm_logic_is_armed(), 0);
+
+    alarm_logic_reset();
 }
 
 static void check_persisted_armed_state_survives_restart_until_schedule_boundary(void)
@@ -573,6 +761,7 @@ static void check_persisted_armed_state_survives_restart_until_schedule_boundary
     runtime_test_disable_state_persistence();
     runtime_test_set_armed(0);
     runtime_test_enable_state_persistence();
+    set_all_configured_sensors_normal(&config);
 
     runtime_test_apply_app_command(AMTECH_DEVICE_COMMAND_ARM, &config);
     check_int("persisted state app ARM sets armed", alarm_logic_is_armed(), 1);
@@ -599,13 +788,13 @@ static void check_persisted_armed_state_survives_restart_until_schedule_boundary
     check_int("restore persisted runtime state", runtime_test_restore_persisted_state(&config), 0);
     check_int("restore persisted ARM after restart", alarm_logic_is_armed(), 1);
 
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("restored ARM not disarmed by first schedule-disarmed tick", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("restored ARM not disarmed by repeated schedule-disarmed tick", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("restored ARM override clears at schedule arm boundary", alarm_logic_is_armed(), 1);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("schedule can disarm after restored override boundary", alarm_logic_is_armed(), 0);
 
     runtime_test_disable_state_persistence();
@@ -639,13 +828,14 @@ static void check_persisted_disarmed_state_survives_restart_until_schedule_bound
     check_int("restore persisted DISARM runtime state", runtime_test_restore_persisted_state(&config), 0);
     check_int("restore persisted DISARM after restart", alarm_logic_is_armed(), 0);
 
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("restored DISARM not re-armed by first schedule-armed tick", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(1);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("restored DISARM not re-armed by repeated schedule-armed tick", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(0);
+    runtime_test_apply_schedule_armed_with_config(0, &config);
     check_int("restored DISARM override clears at schedule disarm boundary", alarm_logic_is_armed(), 0);
-    runtime_test_apply_schedule_armed(1);
+    set_all_configured_sensors_normal(&config);
+    runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("schedule can arm after restored override boundary", alarm_logic_is_armed(), 1);
 
     runtime_test_disable_state_persistence();
@@ -697,24 +887,27 @@ static void check_camera_monitoring_active_sms(void)
     modem_reset_simulated_state();
     alarm_logic_init(42);
     runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
     modem_simulate_incoming_sms("+911111111111", "ARM");
     check_int("camera active SMS setup ARM accepted", runtime_poll_sms_remote_control(&config), 1);
     check_int("camera active SMS immediate ARM reply only", modem_get_simulated_sms_count(), 1);
+    check_string("camera active immediate ARM reply goes to sender only",
+                 modem_get_simulated_sms_number_at(0),
+                 "+911111111111");
 
     runtime_test_tick(AMTECH_STATIC_CALIBRATION_MS);
-    check_int("SMS ARM calibration completion sends all-contact SMS", modem_get_simulated_sms_count(), 4);
-    check_string("SMS ARM completion contact 1", modem_get_simulated_sms_number_at(1), "+911111111111");
-    check_string("SMS ARM completion contact 2", modem_get_simulated_sms_number_at(2), "+912222222222");
-    check_string("SMS ARM completion contact 3", modem_get_simulated_sms_number_at(3), "+913333333333");
+    check_int("SMS ARM calibration completion replies only to command sender", modem_get_simulated_sms_count(), 2);
+    check_string("SMS ARM completion contact is sender", modem_get_simulated_sms_number_at(1), "+911111111111");
     check_string("SMS ARM completion message",
                  modem_get_simulated_last_sms_message(),
-                 "System ARMED");
+                 "AMTECH NETTRA: ARMED\nAll monitoring active.");
 
     gpio_reset_simulated_values();
     modem_reset_simulated_state();
     alarm_logic_init(42);
     runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
     modem_simulate_incoming_sms("+911111111111", "ARM");
     check_int("abort setup ARM accepted", runtime_poll_sms_remote_control(&config), 1);
@@ -731,6 +924,7 @@ static void check_camera_monitoring_active_sms(void)
     modem_reset_simulated_state();
     alarm_logic_init(42);
     runtime_test_set_armed(0);
+    set_all_configured_sensors_normal(&config);
 
     runtime_test_apply_schedule_armed_with_config(1, &config);
     check_int("schedule ARM sets armed for camera active SMS", alarm_logic_is_armed(), 1);
@@ -742,7 +936,7 @@ static void check_camera_monitoring_active_sms(void)
     check_string("schedule completion contact 3", modem_get_simulated_sms_number_at(2), "+913333333333");
     check_string("schedule completion message",
                  modem_get_simulated_last_sms_message(),
-                 "System ARMED");
+                 "AMTECH NETTRA: ARMED\nAll monitoring active.");
 }
 
 static void check_config_sync_preserves_unrelated_keys(void)
@@ -772,8 +966,10 @@ static void check_config_sync_preserves_unrelated_keys(void)
             "ALERT_CONTACT_3=+913333333333\n"
             "CAMERA_ENABLED=1\n"
             "CAMERA_RTSP_URL=rtsp://front\n"
+            "CAMERA_MAC=aa:bb:cc:dd:ee:01\n"
             "CAMERA2_ENABLED=1\n"
             "CAMERA2_RTSP_URL=rtsp://parking\n"
+            "CAMERA2_MAC=aa:bb:cc:dd:ee:02\n"
             "BACKEND_BASE_URL=https://backend.example\n"
             "DEVICE_CONFIG_TOKEN=local-token\n");
     fclose(fp);
@@ -797,7 +993,9 @@ static void check_config_sync_preserves_unrelated_keys(void)
     check_string("config sync updated contact 1", config.alert_contacts[0], "+914444444444");
     check_string("config sync preserved modem device", config.modem_device, "/dev/ttyS1");
     check_string("config sync preserved camera URL", config.camera_rtsp_url, "rtsp://front");
+    check_string("config sync preserved camera MAC", config.camera_mac, "aa:bb:cc:dd:ee:01");
     check_string("config sync preserved camera2 URL", config.camera2_rtsp_url, "rtsp://parking");
+    check_string("config sync preserved camera2 MAC", config.camera2_mac, "aa:bb:cc:dd:ee:02");
     check_string("config sync preserved backend URL", config.backend_base_url, "https://backend.example");
     check_string("config sync preserved device token", config.device_config_token, "local-token");
 
@@ -818,7 +1016,9 @@ static void check_config_sync_preserves_unrelated_keys(void)
     check_contains("config sync file has updated contact 3", contents, "ALERT_CONTACT_3=+916666666666");
     check_contains("config sync file preserves shutter count", contents, "SHUTTER_COUNT=2");
     check_contains("config sync file preserves camera1 URL", contents, "CAMERA_RTSP_URL=rtsp://front");
+    check_contains("config sync file preserves camera1 MAC", contents, "CAMERA_MAC=aa:bb:cc:dd:ee:01");
     check_contains("config sync file preserves camera2 URL", contents, "CAMERA2_RTSP_URL=rtsp://parking");
+    check_contains("config sync file preserves camera2 MAC", contents, "CAMERA2_MAC=aa:bb:cc:dd:ee:02");
 
     check_int("config sync same payload no-op",
               amtech_config_sync_poll(config_path, "amtech-demo-shop", &config),
@@ -857,10 +1057,13 @@ int main(void)
                  AMTECH_DEFAULT_ALERT_CONTACT_3);
     check_int("missing config default camera disabled", config.camera_enabled, 0);
     check_string("missing config default camera URL", config.camera_rtsp_url, "");
+    check_string("missing config default camera MAC", config.camera_mac, "");
     check_int("missing config default camera2 disabled", config.camera2_enabled, 0);
     check_string("missing config default camera2 URL", config.camera2_rtsp_url, "");
+    check_string("missing config default camera2 MAC", config.camera2_mac, "");
     check_string("missing config default backend base URL", config.backend_base_url, AMTECH_DEFAULT_BACKEND_BASE_URL);
     check_string("missing config default shop id", config.shop_id, AMTECH_DEFAULT_SHOP_ID);
+    check_int("missing config default watchdog disabled", config.watchdog_enabled, 0);
 
     fp = fopen(two_shutter_config_path, "w");
     if (fp == NULL)
@@ -868,7 +1071,7 @@ int main(void)
         printf("FAIL: could not write test config file\n");
         return 1;
     }
-    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nSCHEDULE_ARM=22:15\nSCHEDULE_DISARM=05:45\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\nBACKEND_BASE_URL=https://example.test\nDEVICE_CONFIG_TOKEN=test-token\nSHOP_ID=real-shop-123\n");
+    fprintf(fp, "SHUTTER_COUNT=2\nPANIC_ENABLED=1\nSMOKE_ENABLED=1\nSCHEDULE_ARM=22:15\nSCHEDULE_DISARM=05:45\nMODEM_DEVICE=/dev/ttyS1\nALERT_CONTACT_1=+919999999991\nALERT_CONTACT_2=+919999999992\nALERT_CONTACT_3=+919999999993\nCAMERA_ENABLED=1\nCAMERA_RTSP_URL=rtsp://user:pass@192.168.0.2:554/stream1\nCAMERA_MAC=AA:BB:CC:DD:EE:01\nCAMERA2_ENABLED=1\nCAMERA2_RTSP_URL=rtsp://user:pass@192.168.0.4:554/stream1\nCAMERA2_MAC=aa-bb-cc-dd-ee-02\nBACKEND_BASE_URL=https://example.test\nDEVICE_CONFIG_TOKEN=test-token\nSHOP_ID=real-shop-123\nWATCHDOG_ENABLED=1\n");
     fclose(fp);
 
     check_int("two-shutter config load", amtech_config_load(two_shutter_config_path, &config), 0);
@@ -886,14 +1089,21 @@ int main(void)
     check_string("configured camera RTSP URL",
                  config.camera_rtsp_url,
                  "rtsp://user:pass@192.168.0.2:554/stream1");
+    check_string("configured camera MAC",
+                 config.camera_mac,
+                 "AA:BB:CC:DD:EE:01");
     check_int("configured camera enabled", config.camera_enabled, 1);
     check_int("configured camera2 enabled", config.camera2_enabled, 1);
     check_string("configured camera2 RTSP URL",
                  config.camera2_rtsp_url,
                  "rtsp://user:pass@192.168.0.4:554/stream1");
+    check_string("configured camera2 MAC",
+                 config.camera2_mac,
+                 "aa-bb-cc-dd-ee-02");
     check_string("configured backend base URL", config.backend_base_url, "https://example.test");
     check_string("configured device config token", config.device_config_token, "test-token");
     check_string("configured shop id", config.shop_id, "real-shop-123");
+    check_int("configured watchdog enabled", config.watchdog_enabled, 1);
 
     {
         runtime_camera_config_t cameras[AMTECH_RUNTIME_MAX_CAMERAS];
@@ -903,11 +1113,13 @@ int main(void)
         check_camera_config(&cameras[0],
                             "front",
                             "intrusion-front",
-                            "rtsp://user:pass@192.168.0.2:554/stream1");
+                            "rtsp://user:pass@192.168.0.2:554/stream1",
+                            "AA:BB:CC:DD:EE:01");
         check_camera_config(&cameras[1],
                             "parking",
                             "intrusion-parking",
-                            "rtsp://user:pass@192.168.0.4:554/stream1");
+                            "rtsp://user:pass@192.168.0.4:554/stream1",
+                            "aa-bb-cc-dd-ee-02");
 
         config.camera_enabled = 0;
         config.camera2_enabled = 1;
@@ -916,7 +1128,8 @@ int main(void)
         check_camera_config(&cameras[0],
                             "parking",
                             "intrusion-parking",
-                            "rtsp://user:pass@192.168.0.4:554/stream1");
+                            "rtsp://user:pass@192.168.0.4:554/stream1",
+                            "aa-bb-cc-dd-ee-02");
 
         config.camera_enabled = 1;
         config.camera2_enabled = 0;
@@ -925,7 +1138,8 @@ int main(void)
         check_camera_config(&cameras[0],
                             "front",
                             "intrusion-front",
-                            "rtsp://user:pass@192.168.0.2:554/stream1");
+                            "rtsp://user:pass@192.168.0.2:554/stream1",
+                            "AA:BB:CC:DD:EE:01");
 
         config.camera_enabled = 1;
         config.camera_rtsp_url[0] = '\0';
@@ -1010,8 +1224,10 @@ int main(void)
     check_sensor_confirmation_logic();
     check_sms_remote_control();
     check_sms_reply_failures_are_not_reported_as_sent();
+    check_arm_preflight_blocks_faulted_wired_sensors_unless_forced();
     check_sms_manual_override_blocks_schedule_until_boundary();
     check_app_command_manual_override_blocks_schedule_until_boundary();
+    check_alarm_auto_rearms_after_siren_stop_unless_canceled();
     check_persisted_armed_state_survives_restart_until_schedule_boundary();
     check_persisted_disarmed_state_survives_restart_until_schedule_boundary();
     check_camera_monitoring_active_sms();
