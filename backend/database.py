@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, inspect, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
@@ -161,6 +161,37 @@ class ShopEmergencyContact(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     shop = relationship("Shop", back_populates="emergency_contacts")
+
+
+class Esp32Hub(Base):
+    __tablename__ = "esp32_hubs"
+
+    serial = Column(String(128), primary_key=True)
+    token_hash = Column(String(64), nullable=False)
+    pairing_code_hash = Column(String(64), nullable=False)
+    shop_id = Column(String(128), ForeignKey("shops.id"), unique=True, nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    reported_state = Column(JSON, nullable=True)
+
+
+class Esp32Command(Base):
+    __tablename__ = "esp32_commands"
+
+    id = Column(String(128), primary_key=True)
+    serial = Column(String(128), ForeignKey("esp32_hubs.serial"), nullable=False, index=True)
+    name = Column(String(16), nullable=False)
+    status = Column(String(16), nullable=False, default="queued")
+    reason = Column(String(512), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class Esp32EventReceipt(Base):
+    __tablename__ = "esp32_event_receipts"
+
+    id = Column(String(255), primary_key=True)
+    alert_id = Column(String(128), ForeignKey("alerts.id"), nullable=False)
 
 
 def database_url():

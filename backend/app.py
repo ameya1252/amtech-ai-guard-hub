@@ -33,6 +33,7 @@ from database import (
     init_db,
 )
 from sms_provider import normalize_india_phone, send_password_reset_otp
+from esp32_api import esp32_metadata, esp32_status, hub_for_shop, queue_command, register_esp32_routes
 
 
 app = Flask(__name__)
@@ -60,6 +61,18 @@ def rate_limit_key():
 # In-memory limits are fine for the current single-instance Railway pilot.
 # Move to a shared store such as Redis before running multiple backend instances.
 limiter = Limiter(rate_limit_key, app=app)
+
+
+@app.after_request
+def app_cors(response):
+    origins = os.getenv("AMTECH_APP_ORIGINS", "http://localhost:8081,http://localhost:4173,http://127.0.0.1:4173")
+    origin = request.headers.get("Origin")
+    if origin and origin in {item.strip() for item in origins.split(",")}:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,OPTIONS"
+        response.headers.add("Vary", "Origin")
+    return response
 
 
 @app.errorhandler(429)
@@ -661,9 +674,13 @@ def alert_to_dict(alert_row):
 
 
 def shop_status_to_dict(shop):
+    reported = esp32_status(shop)
+    if reported is not None:
+        return reported
     return {
         "ok": True,
         "shop_id": shop.id,
+        "device_type": "rv1106",
         "armed": bool(shop.armed),
         "pending_command": shop.pending_command,
         "pending_command_id": shop.pending_command_id,
@@ -690,6 +707,9 @@ def set_shop_armed(shop_id, armed):
         if error_response:
             return error_response
 
+        if hub_for_shop(db, shop.id):
+            return queue_command(shop_id, "arm" if armed else "disarm")
+
         shop.armed = armed
         shop.pending_command = "arm" if armed else "disarm"
         shop.pending_command_id = str(uuid4())
@@ -708,6 +728,7 @@ def set_shop_armed(shop_id, armed):
 def shop_to_dict(shop):
     device = shop.devices[0] if shop.devices else None
     return {
+        **esp32_metadata(shop.id),
         "ok": True,
         "shop_id": shop.id,
         "shop_name": shop.shop_name,
@@ -773,6 +794,7 @@ def device_config_shop_or_response(db, shop_id):
 def shop_summary_to_dict(shop):
     device = shop.devices[0] if shop.devices else None
     return {
+        **esp32_metadata(shop.id),
         "shop_id": shop.id,
         "shop_name": shop.shop_name,
         "owner_name": shop.owner_name,
@@ -1087,6 +1109,9 @@ def verify_reset_otp():
 def alert():
     try:
         alert_payload = parse_alert(request.get_json(silent=True))
+        with SessionLocal() as db:
+            if hub_for_shop(db, alert_payload["shop_id"]):
+                return jsonify({"ok": False, "error": "ESP32 alerts require authenticated device sync"}), 403
         alert_row = record_alert(alert_payload)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -1106,6 +1131,9 @@ def create_shop():
 
     db = SessionLocal()
     try:
+        from database import Esp32Hub
+        if db.get(Esp32Hub, payload["device_serial"]):
+            return jsonify({"ok": False, "error": "Use ESP32 pairing with the hub's pairing code"}), 409
         existing_device = (
             db.query(Device)
             .filter(Device.device_serial == payload["device_serial"])
@@ -1208,6 +1236,9 @@ def register_camera(shop_id):
         shop, error_response = owned_shop_or_response(db, shop_id)
         if error_response:
             return error_response
+
+        if hub_for_shop(db, shop.id):
+            return jsonify({"ok": False, "error": "ESP32 camera configuration is managed on the hub"}), 409
 
         inventory = get_or_seed_camera_inventory(db, payload)
         if inventory is None:
@@ -1325,6 +1356,9 @@ def get_device_config(shop_id):
         if error_response:
             return error_response
 
+        if hub_for_shop(db, shop.id):
+            return jsonify({"ok": False, "error": "ESP32 schedules and contact editing are not supported"}), 409
+
         return jsonify(device_config_to_dict(shop))
     finally:
         db.close()
@@ -1343,6 +1377,9 @@ def update_device_config(shop_id):
         shop, error_response = owned_shop_or_response(db, shop_id)
         if error_response:
             return error_response
+
+        if hub_for_shop(db, shop.id):
+            return jsonify({"ok": False, "error": "ESP32 schedules and contact editing are not supported"}), 409
 
         upsert_device_config(db, shop, payload)
         db.commit()
@@ -1471,7 +1508,10 @@ def alerts(shop_id):
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "esp32_api_version": 1})
+
+
+register_esp32_routes(app, auth_required, owned_shop_or_response, lambda messages: send_expo_push_messages(messages))
 
 
 if __name__ == "__main__":
