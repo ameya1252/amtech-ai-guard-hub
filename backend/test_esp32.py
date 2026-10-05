@@ -75,7 +75,7 @@ class Esp32Tests(unittest.TestCase):
         self.sync()  # Physical/SMS disarm is authoritative without an app command.
         self.assertFalse(self.status()['armed'])
 
-    def test_stop_is_separate_and_preserves_reported_armed_state(self):
+    def test_stop_follows_reported_alarm_specific_state(self):
         armed = {**STATE, 'arm_state': 'armed', 'siren_active': True, 'siren_owner': 'smoke'}
         self.sync(armed)
         self.command('stop')
@@ -84,6 +84,13 @@ class Esp32Tests(unittest.TestCase):
         self.sync({**armed, 'siren_active': False}, ack=dict(id=command['id'], status='applied'))
         self.assertTrue(self.status()['armed'])
         self.assertFalse(self.status()['siren_active'])
+        # Intrusion STOP deliberately disarms in the unchanged ESP32 core.
+        self.sync({**armed, 'siren_owner': 'intrusion'})
+        self.command('stop')
+        command = self.sync({**armed, 'siren_owner': 'intrusion'}).json['command']
+        self.sync(STATE, ack=dict(id=command['id'], status='applied'))
+        self.assertFalse(self.status()['armed'])
+        self.assertEqual(self.status()['last_command']['status'], 'applied')
 
     def test_preemption_duplicates_and_expiry(self):
         arm = self.command('arm').json['pending_command_id']
