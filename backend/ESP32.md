@@ -35,3 +35,5 @@ Deploy repository root to the existing Railway service, retaining its `backend` 
 Run `python test_esp32.py`, `python test_pending_command.py`, `python test_identity_constraints.py`, and `python test_forgot_password.py` from backend using test environment fixtures. These do not require real hub activity. AMTECH_APP_ORIGINS configures allowed web origins; the default includes local Expo/web preview ports. Native apps do not use browser CORS.
 
 The firmware adapter uses the already-configured Wi-Fi transport. It does not add cellular HTTP/data behavior. A phone/board test and Expo/FCM notification credentials are needed to qualify the complete installation.
+
+The single-process Gunicorn server uses four request threads. This allows app status/shop/alert polling and device heartbeats to overlap without queuing every request behind a synchronous worker. Database sessions remain per request, and hub/command writes remain serialized by the existing row locks. Keep one process for the current in-memory rate limiter and database keepalive thread. Live browser testing exposed eight-second client timeouts with the previous single synchronous worker.
