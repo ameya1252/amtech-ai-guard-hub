@@ -194,6 +194,22 @@ class Esp32EventReceipt(Base):
     alert_id = Column(String(128), ForeignKey("alerts.id"), nullable=False)
 
 
+class Esp32CameraAdvisoryReceipt(Base):
+    __tablename__ = "esp32_camera_advisory_receipts"
+
+    id = Column(String(255), primary_key=True)
+    serial = Column(String(128), ForeignKey("esp32_hubs.serial"), nullable=False, index=True)
+    camera_id = Column(Integer, nullable=False)
+    alert_id = Column(String(128), ForeignKey("alerts.id"), nullable=True)
+    status = Column(String(24), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    attempted_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    ticket_ids = Column(JSON, nullable=True)
+    cooldown_until = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
 def database_url():
     url = os.getenv("DATABASE_URL")
     if not url:

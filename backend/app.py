@@ -34,6 +34,7 @@ from database import (
 )
 from sms_provider import normalize_india_phone, send_password_reset_otp
 from esp32_api import esp32_metadata, esp32_status, hub_for_shop, queue_command, register_esp32_routes
+from camera_advisory_api import register_camera_advisory_routes
 
 
 app = Flask(__name__)
@@ -1512,6 +1513,7 @@ def health():
 
 
 register_esp32_routes(app, auth_required, owned_shop_or_response, lambda messages: send_expo_push_messages(messages))
+register_camera_advisory_routes(app, lambda messages: send_expo_push_messages(messages))
 
 
 if __name__ == "__main__":

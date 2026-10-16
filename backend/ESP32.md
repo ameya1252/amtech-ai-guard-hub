@@ -37,3 +37,14 @@ Run `python test_esp32.py`, `python test_pending_command.py`, `python test_ident
 The firmware adapter uses the already-configured Wi-Fi transport. It does not add cellular HTTP/data behavior. A phone/board test and Expo/FCM notification credentials are needed to qualify the complete installation.
 
 The single-process Gunicorn server uses four request threads. This allows app status/shop/alert polling and device heartbeats to overlap without queuing every request behind a synchronous worker. Database sessions remain per request, and hub/command writes remain serialized by the existing row locks. Keep one process for the current in-memory rate limiter and database keepalive thread. Live browser testing exposed eight-second client timeouts with the previous single synchronous worker.
+
+
+## Camera 1 interference advisory
+
+`POST /esp32/device/camera-advisory` uses the existing device serial/token headers and accepts `{"event_id":"STABLE_EPISODE_ID","camera_id":1}`. It is independent of sync alarm events and never queues a command, SMS or call. Only Camera 1 is enabled in this phase. The server retains a `camera-interference-1` history event and a durable record in the new `esp32_camera_advisory_receipts` table (created by the existing `init_db()`/`create_all` path). Existing tables/credentials are unchanged.
+
+Responses contain `ok`, matching `event_id`, `status` and `cooldown_ms`. `accepted` requires at least one real Expo ticket with status `ok` and a nonempty ticket ID; simulation and missing push tokens never qualify. The 30-minute per-camera cooldown starts on service acceptance. A push ticket does not establish phone delivery. `retry` is bounded to three attempts with 30-second spacing and a 90-second episode lifetime; use the same ID. `failed` is terminal for that episode. `suppressed` episodes never become delayed notifications. `uncertain` means a possible submission cannot safely be repeated, so a conservative suppression window applies.
+
+A durable `in_flight` reservation precedes each external send. Concurrent requests and process/network failure after submission cannot cause a blind resend. Only explicit provider rejection is retried. Advisory push uses channel `camera-advisories` and identifies Camera 1; normal intrusion/smoke/panic paths retain their existing behavior.
+
+Local checks: run `python -m unittest test_esp32 test_camera_advisory -v` with the test dependencies. Older test scripts set environment variables at import time; run their standalone entry points in separate processes. Unit tests use isolated SQLite and fake Expo responses. Actual concurrent row locking requires the production PostgreSQL database; no production migration or push was performed by these tests. Native phone push and camera-output isolation remain release checks.
