@@ -9,6 +9,7 @@ from flask import g, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from database import Alert, Device, Esp32Command, Esp32EventReceipt, Esp32Hub, SessionLocal, Shop
+from alarm_push import enqueue_alarm_pushes
 
 ONLINE_SECONDS = 45
 COMMAND_SECONDS = 120
@@ -138,7 +139,7 @@ def validate_state(state):
     return result
 
 
-def register_esp32_routes(app, auth_required, owned_shop_or_response, send_expo_push_messages):
+def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes):
     @app.post("/esp32/pair")
     @auth_required
     def pair_esp32():
@@ -217,7 +218,6 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, send_expo_
                         raise ValueError("Alert timestamp must include a timezone")
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        messages = []
         with SessionLocal() as db:
             hub = db.query(Esp32Hub).filter(Esp32Hub.serial == serial).with_for_update().first()
             if not hub or not hmac.compare_digest(hub.token_hash, secret_hash(token)):
@@ -251,14 +251,7 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, send_expo_
                         db.flush()
                         db.add(Esp32EventReceipt(id=receipt_id, alert_id=alert.id))
                         db.flush()
-                        from database import PushToken
-                        tokens = db.query(PushToken).filter(PushToken.user_id == shop.user_id).all()
-                        label = event["event_type"].replace("-", " ").title()
-                        messages.extend({"to": row.expo_push_token, "title": f"AMTECH: {label}",
-                                         "body": f"{label} at {shop.shop_name}. Check the hub's current status.",
-                                         "sound": "default", "channelId": "alerts",
-                                         "data": {"shop_id": shop.id, "alert_id": alert.id, "event_type": event["event_type"]}}
-                                        for row in tokens)
+                        enqueue_alarm_pushes(db, alert, shop)
                     accepted.append(event["id"])
                 expire_commands(db, serial)
                 pending = db.query(Esp32Command).filter(Esp32Command.serial == serial, Esp32Command.status.in_(ACTIVE)).first()
@@ -269,9 +262,5 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, send_expo_
             result = {"ok": True, "paired": bool(hub.shop_id), "command": command_dict(pending),
                       "ack_received": ack_received, "accepted_event_ids": accepted}
             db.commit()
-        if messages:
-            try:
-                send_expo_push_messages(messages)
-            except Exception:
-                app.logger.warning("ESP32 push delivery failed; alert history has been retained")
+        wake_alarm_pushes()
         return jsonify(result)

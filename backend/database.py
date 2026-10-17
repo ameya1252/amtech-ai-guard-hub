@@ -194,6 +194,23 @@ class Esp32EventReceipt(Base):
     alert_id = Column(String(128), ForeignKey("alerts.id"), nullable=False)
 
 
+class AlarmPushDelivery(Base):
+    """Durable, per-phone delivery; independent of the hub's event receipt."""
+    __tablename__ = "alarm_push_deliveries"
+    __table_args__ = (UniqueConstraint("alert_id", "token_id", name="uq_alarm_push_alert_token"),)
+
+    id = Column(String(128), primary_key=True)
+    alert_id = Column(String(128), ForeignKey("alerts.id"), nullable=False)
+    token_id = Column(String(128), nullable=False)
+    user_id = Column(String(128), nullable=False)
+    status = Column(String(16), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    lease_id = Column(String(128), nullable=True)
+    ticket_id = Column(String(255), nullable=True)
+
+
 class Esp32CameraAdvisoryReceipt(Base):
     __tablename__ = "esp32_camera_advisory_receipts"
 

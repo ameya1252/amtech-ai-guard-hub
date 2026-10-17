@@ -1,6 +1,6 @@
 # ESP32 app integration
 
-This is additive to the existing RV1106 backend. Reuse the service's DATABASE_URL, JWT_SECRET, DEVICE_CONFIG_SYNC_TOKEN and R2 environment settings. Startup creates three additive ESP32 tables; existing RV1106 alarm/command contracts remain unchanged.
+This is additive to the existing RV1106 backend. Reuse the service's DATABASE_URL, JWT_SECRET, DEVICE_CONFIG_SYNC_TOKEN and R2 environment settings. Startup creates the additive ESP32 tables; existing RV1106 alarm/command contracts remain unchanged.
 
 ## Provisioning
 
@@ -28,6 +28,16 @@ Owner controls POST /shop/:id/arm, /disarm, /arm-force and /stop queue requests.
 
 Legacy unauthenticated /alert and device-config/camera-registration routes do not accept ESP32 operations. ESP32 alerts use device-authenticated sync. Existing push sender and owner push-token storage are reused, without applying RV1106-specific auto-disarm messaging to ESP32 smoke/panic events.
 
+## Alarm push retries and phone logout
+
+Sync saves new alert history, its device event receipt and one `alarm_push_deliveries` job per registered owner phone in the same transaction. The event acknowledgement means the backend retained the event; it does not claim phone delivery. The background worker sends independently of heartbeats, so acknowledged events can still retry after a process restart or hub disconnection. Sync does not wait for Expo.
+
+Jobs retry transient HTTP/network failures, rejected Expo tickets and malformed responses with exponential backoff starting at 30 seconds, capped at 15 minutes, up to eight attempts within one hour of ingestion. Each recipient has its own state, so an accepted phone is not resent when another fails. Nonempty successful Expo tickets mark acceptance, not confirmed phone display. `DeviceNotRegistered` removes the stale token; oversized messages fail without repeated sends. Simulation is recorded separately. Terminal failures remain visible in the database/logs, and alert history is retained.
+
+The worker starts with the existing non-preloaded Gunicorn process, polls every 15 seconds, wakes on sync and uses atomic 90-second leases to recover abandoned jobs. Set `ALARM_PUSH_WORKER_DISABLED=1` for isolated tests/maintenance. Delivery is at least once: if Expo accepts a push but its reply is lost, retry can duplicate that notification. Camera advisories retain their separate conservative cooldown/retry behavior.
+
+Authenticated `DELETE /me/push-token` with `{"expo_push_token":"ExpoPushToken[...]"}` idempotently removes only that owner's specified phone token and cancels its queued alarm pushes. Another account cannot delete the registration. Dispatch rechecks token ownership, so queued messages do not follow an account switch. A request already in flight or accepted by Expo cannot be recalled. Deploy this endpoint before distributing the updated mobile app, whose logout awaits successful unregistration before clearing its login session.
+
 ## Deployment and checks
 
 Deploy repository root to the existing Railway service, retaining its `backend` root directory. Select the `esp32` branch for GitHub autodeploys. /health includes esp32_api_version=1. All schema additions are created at startup via existing init_db.
@@ -47,4 +57,4 @@ Responses contain `ok`, matching `event_id`, `status` and `cooldown_ms`. `accept
 
 A durable `in_flight` reservation precedes each external send. Concurrent requests and process/network failure after submission cannot cause a blind resend. Only explicit provider rejection is retried. Advisory push uses channel `camera-advisories` and identifies Camera 1; normal intrusion/smoke/panic paths retain their existing behavior.
 
-Local checks: run `python -m unittest test_esp32 test_camera_advisory -v` with the test dependencies. Older test scripts set environment variables at import time; run their standalone entry points in separate processes. Unit tests use isolated SQLite and fake Expo responses. Actual concurrent row locking requires the production PostgreSQL database; no production migration or push was performed by these tests. Native phone push and camera-output isolation remain release checks.
+Local checks: run `python -m unittest test_esp32 test_camera_advisory test_alarm_push -v` with the test dependencies. Older test scripts set environment variables at import time; run their standalone entry points in separate processes with `ALARM_PUSH_WORKER_DISABLED=1 DATABASE_KEEPALIVE_DISABLED=1 SIMULATE_PUSH=1 SIMULATE_SMS=1`. Unit tests use isolated SQLite and fake Expo responses. Actual concurrent row locking requires PostgreSQL; no production migration or push was performed by these tests. Native phone push and camera-output isolation remain release checks.

@@ -7,7 +7,7 @@ from unittest.mock import patch
 database_file = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
 database_file.close()
 os.environ.update(DATABASE_URL=f"sqlite:///{database_file.name}", JWT_SECRET="esp32-test-secret-32-bytes-minimum",
-                  DEVICE_CONFIG_SYNC_TOKEN="legacy-test-token", DATABASE_KEEPALIVE_DISABLED="1", SIMULATE_SMS="1", SIMULATE_PUSH="1")
+                  DEVICE_CONFIG_SYNC_TOKEN="legacy-test-token", DATABASE_KEEPALIVE_DISABLED="1", ALARM_PUSH_WORKER_DISABLED="1", SIMULATE_SMS="1", SIMULATE_PUSH="1")
 from app import app, limiter
 from database import Base, engine, SessionLocal, Esp32Hub, Esp32Command, Esp32EventReceipt, Shop, Alert
 from esp32_api import secret_hash
@@ -122,9 +122,12 @@ class Esp32Tests(unittest.TestCase):
             owner = db.get(Shop, self.shop_id).user_id
             db.add(PushToken(id='push1', user_id=owner, expo_push_token='ExpoPushToken[test]', platform='android'))
             db.commit()
-        with patch('app.send_expo_push_messages') as mock:
+        from alarm_push import deliver_pending_alarm_pushes
+        with patch('app.send_expo_push_messages', return_value={"data": [{"status": "ok", "id": "ticket"}]}) as mock:
             self.assertEqual(self.sync(events=[event, event]).json['accepted_event_ids'], [event['id'], event['id']])
+            deliver_pending_alarm_pushes(mock)
             self.sync(events=[event])
+            deliver_pending_alarm_pushes(mock)
             self.assertEqual(mock.call_count, 1)
             self.assertEqual(mock.call_args[0][0][0]['title'], 'AMTECH: Smoke')
         with SessionLocal() as db:

@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database import (
     Alert,
+    AlarmPushDelivery,
     Camera,
     CameraInventory,
     Device,
@@ -35,6 +36,7 @@ from database import (
 from sms_provider import normalize_india_phone, send_password_reset_otp
 from esp32_api import esp32_metadata, esp32_status, hub_for_shop, queue_command, register_esp32_routes
 from camera_advisory_api import register_camera_advisory_routes
+from alarm_push import start_alarm_push_worker, wake_alarm_pushes
 
 
 app = Flask(__name__)
@@ -71,7 +73,7 @@ def app_cors(response):
     if origin and origin in {item.strip() for item in origins.split(",")}:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
         response.headers.add("Vary", "Origin")
     return response
 
@@ -952,6 +954,29 @@ def register_push_token():
         db.close()
 
 
+@app.delete("/me/push-token")
+@auth_required
+def unregister_push_token():
+    try:
+        payload = parse_push_token(request.get_json(silent=True))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    with SessionLocal() as db:
+        # Idempotent and scoped to this owner + this phone, never all phones.
+        token = db.query(PushToken).filter_by(
+            user_id=g.user_id, expo_push_token=payload["expo_push_token"],
+        ).with_for_update().first()
+        if token:
+            db.query(AlarmPushDelivery).filter(
+                AlarmPushDelivery.token_id == token.id,
+                AlarmPushDelivery.user_id == g.user_id,
+                AlarmPushDelivery.status.in_(("pending", "sending")),
+            ).update({"status": "cancelled"}, synchronize_session=False)
+            db.delete(token)
+        db.commit()
+    return jsonify({"ok": True})
+
+
 @app.post("/auth/signup")
 @limiter.limit("3 per minute")
 def signup():
@@ -1512,8 +1537,9 @@ def health():
     return jsonify({"status": "ok", "esp32_api_version": 1})
 
 
-register_esp32_routes(app, auth_required, owned_shop_or_response, lambda messages: send_expo_push_messages(messages))
+register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes)
 register_camera_advisory_routes(app, lambda messages: send_expo_push_messages(messages))
+start_alarm_push_worker(lambda messages: send_expo_push_messages(messages))
 
 
 if __name__ == "__main__":
