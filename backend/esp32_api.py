@@ -8,7 +8,7 @@ from uuid import uuid4
 from flask import g, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
-from database import Alert, Device, Esp32Command, Esp32EventReceipt, Esp32Hub, SessionLocal, Shop
+from database import Alert, Device, Esp32Command, Esp32EventReceipt, Esp32Hub, PushToken, SessionLocal, Shop
 from alarm_push import enqueue_alarm_pushes
 
 ONLINE_SECONDS = 45
@@ -237,22 +237,36 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                         command.completed_at = datetime.now(timezone.utc)
                     ack_received = command.id
             accepted = []
+            new_alerts = []
             if hub.shop_id:
                 shop = db.get(Shop, hub.shop_id)
                 shop.armed = state["arm_state"] == "armed"
                 device = db.query(Device).filter(Device.shop_id == shop.id).first()
                 device.last_seen_at, device.status = hub.last_seen_at, "online"
+                # A lost reply can leave all 32 retained events being retried.
+                # Fetch receipts together so hosted-DB latency cannot multiply
+                # per event and prevent the hub ever receiving its acceptance.
+                receipt_ids = {f"{serial}:{event['id']}" for event in events}
+                known = {row.id for row in db.query(Esp32EventReceipt.id).filter(
+                    Esp32EventReceipt.id.in_(receipt_ids)).all()} if receipt_ids else set()
+                new_receipts = []
                 for event in events:
                     receipt_id = f"{serial}:{event['id']}"
-                    if db.get(Esp32EventReceipt, receipt_id) is None:
+                    if receipt_id not in known:
                         timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")) if event.get("timestamp") else hub.last_seen_at
                         alert = Alert(id=str(uuid4()), shop_id=shop.id, event_type=event["event_type"], timestamp=timestamp)
-                        db.add(alert)
-                        db.flush()
-                        db.add(Esp32EventReceipt(id=receipt_id, alert_id=alert.id))
-                        db.flush()
-                        enqueue_alarm_pushes(db, alert, shop)
+                        new_alerts.append(alert)
+                        new_receipts.append(Esp32EventReceipt(id=receipt_id, alert_id=alert.id))
+                        known.add(receipt_id)
                     accepted.append(event["id"])
+                if new_alerts:
+                    db.add_all(new_alerts)
+                    db.flush()
+                    db.add_all(new_receipts)
+                    db.flush()
+                    tokens = db.query(PushToken).filter_by(user_id=shop.user_id).all()
+                    for alert in new_alerts:
+                        enqueue_alarm_pushes(db, alert, shop, tokens=tokens)
                 expire_commands(db, serial)
                 pending = db.query(Esp32Command).filter(Esp32Command.serial == serial, Esp32Command.status.in_(ACTIVE)).first()
                 if pending:
@@ -262,5 +276,6 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
             result = {"ok": True, "paired": bool(hub.shop_id), "command": command_dict(pending),
                       "ack_received": ack_received, "accepted_event_ids": accepted}
             db.commit()
-        wake_alarm_pushes()
+        if new_alerts:
+            wake_alarm_pushes()
         return jsonify(result)

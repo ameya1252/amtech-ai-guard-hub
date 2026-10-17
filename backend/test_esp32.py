@@ -147,6 +147,40 @@ class Esp32Tests(unittest.TestCase):
         self.assertIsNone(response.json['ack_received'])
         self.assertEqual(self.status()['pending_command_id'], command_id)
 
+    def test_full_outbox_is_batched_and_retry_does_not_repeat_pushes(self):
+        from sqlalchemy import event as sql_event
+        from database import AlarmPushDelivery, PushToken
+        events = [dict(id=f'full-{i}', event_type='smoke') for i in range(32)]
+        with SessionLocal() as db:
+            owner = db.get(Shop, self.shop_id).user_id
+            db.add(PushToken(id='phone', user_id=owner, expo_push_token='ExpoPushToken[test]'))
+            db.commit()
+        statements = []
+
+        def record(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement.lower())
+
+        sql_event.listen(engine, 'before_cursor_execute', record)
+        try:
+            first = self.sync(events=events)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.json['accepted_event_ids'], [e['id'] for e in events])
+            self.assertEqual(sum(s.startswith('select') and 'esp32_event_receipts' in s for s in statements), 1)
+            self.assertEqual(sum(s.startswith('select') and 'push_tokens' in s for s in statements), 1)
+            statements.clear()
+            with patch('alarm_push.wake_event.set') as wake:
+                retry = self.sync(events=events)
+                self.assertEqual(retry.json['accepted_event_ids'], first.json['accepted_event_ids'])
+                wake.assert_not_called()
+            self.assertEqual(sum(s.startswith('select') and 'esp32_event_receipts' in s for s in statements), 1)
+            self.assertFalse(any(s.startswith('select') and 'push_tokens' in s for s in statements))
+        finally:
+            sql_event.remove(engine, 'before_cursor_execute', record)
+        with SessionLocal() as db:
+            self.assertEqual(db.query(Esp32EventReceipt).count(), 32)
+            self.assertEqual(db.query(Alert).count(), 32)
+            self.assertEqual(db.query(AlarmPushDelivery).count(), 32)
+
     def test_malformed_events_and_cors(self):
         for event in ({'id': 123, 'event_type': 'smoke'}, {'id': 'valid', 'event_type': []}, {'id': 'valid', 'event_type': 'smoke', 'timestamp': 123}):
             self.assertEqual(self.sync(events=[event]).status_code, 400)

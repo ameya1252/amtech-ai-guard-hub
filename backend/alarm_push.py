@@ -22,9 +22,11 @@ def utc(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def enqueue_alarm_pushes(db, alert, shop):
+def enqueue_alarm_pushes(db, alert, shop, tokens=None):
     now = datetime.now(timezone.utc)
-    for token in db.query(PushToken).filter_by(user_id=shop.user_id).all():
+    if tokens is None:
+        tokens = db.query(PushToken).filter_by(user_id=shop.user_id).all()
+    for token in tokens:
         db.add(AlarmPushDelivery(id=str(uuid4()), alert_id=alert.id,
                token_id=token.id, user_id=shop.user_id, status="pending", attempts=0,
                next_attempt_at=now, expires_at=now + timedelta(hours=1)))
