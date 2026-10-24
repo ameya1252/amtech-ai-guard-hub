@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database import Alert, Device, Esp32Command, Esp32EventReceipt, Esp32Hub, PushToken, SessionLocal, Shop
 from alarm_push import enqueue_alarm_pushes
+from operations_api import claim_manufactured_hub, location_payload, package_for_hub, record_observation
 
 ONLINE_SECONDS = 45
 COMMAND_SECONDS = 120
@@ -136,6 +137,20 @@ def validate_state(state):
     if reason is not None and (not isinstance(reason, str) or len(reason) > 512):
         raise ValueError("Invalid arm block reason")
     result["arm_block_reason"] = reason
+    for key in ('firmware_version', 'boot_id', 'hardware_id', 'reset_reason'):
+        value = state.get(key)
+        if value is not None:
+            if not isinstance(value, str) or not 1 <= len(value) <= 128:
+                raise ValueError(f'Invalid {key}')
+            if key == 'hardware_id' and not re.fullmatch('[0-9a-f]{12}', value):
+                raise ValueError('Invalid hardware_id')
+            result[key] = value
+    for key in ('uptime_ms', 'free_heap_bytes'):
+        value = state.get(key)
+        if value is not None:
+            if type(value) is not int or not 0 <= value <= 2**53 - 1:
+                raise ValueError(f'Invalid {key}')
+            result[key] = value
     return result
 
 
@@ -151,14 +166,20 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
             return jsonify({"ok": False, "error": "Hub serial, pairing code and shop details are required"}), 400
         if any(len(payload[k]) > limit for k, limit in zip(required, (128, 128, 255, 255, 1024))):
             return jsonify({"ok": False, "error": "Pairing details are too long"}), 400
+        try:
+            location = location_payload(payload)
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
         with SessionLocal() as db:
             hub = db.query(Esp32Hub).filter(Esp32Hub.serial == payload["device_serial"].strip()).with_for_update().first()
-            if hub is None or not hmac.compare_digest(hub.pairing_code_hash, secret_hash(payload["pairing_code"].strip())):
+            if hub is None:
+                return jsonify({"ok": False, "error": "Hub serial or pairing code is incorrect"}), 403
+            if not hmac.compare_digest(hub.pairing_code_hash, secret_hash(payload["pairing_code"].strip())):
                 return jsonify({"ok": False, "error": "Hub serial or pairing code is incorrect"}), 403
             if hub.shop_id:
                 shop = db.get(Shop, hub.shop_id)
                 if shop.user_id == g.user_id:
-                    return jsonify({"ok": True, "shop_id": shop.id, "device_type": "esp32"})
+                    return jsonify({"ok": True, "shop_id": shop.id, "device_type": "esp32", "package": package_for_hub(db, hub.serial)})
                 return jsonify({"ok": False, "error": "This hub is already paired"}), 409
             shop = Shop(id=str(uuid4()), user_id=g.user_id, shop_name=payload["shop_name"].strip(),
                         owner_name=payload["owner_name"].strip(), address=payload["address"].strip(),
@@ -170,11 +191,15 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                           status="online" if online(hub) else "offline", last_seen_at=hub.last_seen_at))
             hub.shop_id = shop.id
             try:
+                claim_manufactured_hub(db, hub, location)
+            except ValueError as exc:
+                return jsonify(ok=False, error=str(exc)), 409
+            try:
                 db.commit()
             except IntegrityError:
                 db.rollback()
                 return jsonify({"ok": False, "error": "This hub serial is already registered"}), 409
-            return jsonify({"ok": True, "shop_id": shop.id, "device_type": "esp32"}), 201
+            return jsonify({"ok": True, "shop_id": shop.id, "device_type": "esp32", "package": package_for_hub(db, hub.serial)}), 201
 
     for path, name in (("arm-force", "arm_force"), ("stop", "stop")):
         def action(shop_id, operation=name):
@@ -223,7 +248,9 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
             if not hub or not hmac.compare_digest(hub.token_hash, secret_hash(token)):
                 return jsonify({"ok": False, "error": "Invalid device credentials"}), 401
             hub.last_seen_at = datetime.now(timezone.utc)
+            previous = hub.reported_state
             hub.reported_state = state
+            record_observation(db, hub, previous)
             ack_received = None
             if ack:
                 command = db.get(Esp32Command, ack["id"])
