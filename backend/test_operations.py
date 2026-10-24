@@ -26,7 +26,7 @@ class OperationsTests(unittest.TestCase):
         r=self.op('POST',f'assets/{serial}/provision',{'hardware_id':'aabbccddeeff'})
         self.assertEqual(r.status_code,200,r.json)
         device={'X-AMTECH-DEVICE-SERIAL':serial,'X-AMTECH-DEVICE-TOKEN':r.json['device_token']}
-        self.assertEqual(self.client.post('/esp32/device/sync',headers=device,json={'state':{**fixture.STATE,'hardware_id':'aabbccddeeff','boot_id':'boot-a'}}).status_code,200)
+        self.assertEqual(self.client.post('/esp32/device/sync',headers=device,json={'state':{**fixture.STATE,'hardware_id':'aabbccddeeff','boot_id':'boot-a','alert_outbox_count':0}}).status_code,200)
         tested=self.op('POST',f'assets/{serial}/test',{'checks':dict.fromkeys(EOL_CHECKS,True)})
         self.assertEqual(tested.status_code,200,tested.json)
         return label
@@ -125,5 +125,31 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(asset['manufacturing_batch'],'SAAKETH-LOT-12');self.assertEqual(asset['manufactured_on'],'2026-10-20')
         self.assertEqual(self.op('POST','batches',{**body,'manufacturing_batch':'another-lot'}).status_code,400)
         self.assertEqual(self.op('POST','batches',{**body,'request_id':str(uuid4()),'manufactured_on':'2026-02-31'}).status_code,400)
+
+    def test_factory_events_are_not_replayed_into_customer_alarms(self):
+        from database import Alert
+        hub=self.ready();serial=hub['serial']
+        credentials=self.op('POST',f'assets/{serial}/provision',{'hardware_id':'aabbccddeeff'})
+        # Released credentials cannot be fetched again. Use a separately prepared
+        # fixture token hash only for this isolated device transport test.
+        from esp32_api import secret_hash
+        with SessionLocal() as db:db.get(Esp32Hub,serial).token_hash=secret_hash('factory-fixture-token');db.commit()
+        headers={'X-AMTECH-DEVICE-SERIAL':serial,'X-AMTECH-DEVICE-TOKEN':'factory-fixture-token'}
+        event={'id':'eol-smoke-one','event_type':'smoke'}
+        state={**fixture.STATE,'hardware_id':'aabbccddeeff','alert_outbox_count':1}
+        for _ in range(2):
+            r=self.client.post('/esp32/device/sync',headers=headers,json={'state':state,'events':[event,event]})
+            self.assertEqual(r.status_code,200);self.assertEqual(r.json['accepted_event_ids'],[event['id'],event['id']])
+        with SessionLocal() as db:self.assertEqual(db.query(OperationsEvent).filter_by(kind='factory_smoke').count(),1)
+        # No release while the device still reports undrained factory history.
+        self.assertEqual(self.op('POST',f'assets/{serial}/test',{'checks':dict.fromkeys(EOL_CHECKS,True)}).status_code,409)
+        state['alert_outbox_count']=0
+        self.client.post('/esp32/device/sync',headers=headers,json={'state':state})
+        self.assertEqual(self.op('POST',f'assets/{serial}/test',{'checks':dict.fromkeys(EOL_CHECKS,True)}).status_code,200)
+        order=self.order({'camera':0,'shutter':0,'smoke':0});self.scan(order,hub,'hub');self.op('POST',f'orders/{order}/pack',{})
+        paired=self.pair(hub);self.assertEqual(paired.status_code,201)
+        # A lost acknowledgement retried after claiming is still a factory event.
+        self.client.post('/esp32/device/sync',headers=headers,json={'state':state,'events':[event]})
+        with SessionLocal() as db:self.assertEqual(db.query(Alert).filter_by(shop_id=paired.json['shop_id']).count(),0)
 
 if __name__=='__main__':unittest.main()

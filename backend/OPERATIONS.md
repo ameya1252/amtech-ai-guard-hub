@@ -89,3 +89,13 @@ scan ordering, wrong types, duplicates, capacity limits, cross-order isolation,
 removal, complete claiming, customer isolation, location validation and state-log
 coalescing. They use SQLite fixtures; live Postgres concurrency and fresh-board
 writes still require deployment/hardware qualification.
+
+## Factory-event isolation
+
+Managed, unclaimed hubs acknowledge test alarms into the manufacturing timeline,
+not customer alerts. Stable factory event IDs are deduplicated and stay excluded
+from customer history even if an old acknowledgement is retried after claiming.
+Legacy unclaimed hubs retain their prior outbox behavior. EOL release requires
+new firmware to report an empty alert outbox, with the hub disarmed, siren off and
+smoke input normal. This prevents stale factory smoke/panic tests becoming the
+buyer's first notifications. Customer alarm rules are unchanged.

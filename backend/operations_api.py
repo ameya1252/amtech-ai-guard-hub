@@ -107,6 +107,28 @@ def record_observation(db, hub, previous):
         reboot = bool(state.get('boot_id') and state.get('boot_id') != (previous or {}).get('boot_id'))
         audit(db, 'hub_boot' if reboot else 'state_changed', 'Hub started a new session' if reboot else 'Reported hub state changed', hub.serial, current)
 
+def factory_receipt_id(serial, event_id):
+    return digest('factory:' + serial + ':' + event_id)
+
+def factory_event_ids(db, serial, events):
+    if not events or not re.fullmatch(r'NET-[BH]-[0-9]{4}-[0-9]{5}', serial):
+        return set()
+    identities = {factory_receipt_id(serial, event['id']): event['id'] for event in events}
+    return {identities[row.id] for row in db.query(OperationsEvent.id).filter(OperationsEvent.id.in_(identities)).all()}
+
+def record_factory_events(db, hub, events):
+    """Factory siren/sensor tests must never become the buyer's alarm history."""
+    if not events or not db.get(Asset, hub.serial):
+        return []  # Preserve the legacy unclaimed-hub outbox contract.
+    known = factory_event_ids(db, hub.serial, events)
+    for event in events:
+        if event['id'] not in known:
+            db.add(OperationsEvent(id=factory_receipt_id(hub.serial, event['id']), serial=hub.serial,
+                kind='factory_' + event['event_type'], message='Factory test event: ' + event['event_type'],
+                details={'context': 'factory', 'device_timestamp': event.get('timestamp')}))
+            known.add(event['id'])
+    return [event['id'] for event in events]
+
 def parse_scan(raw):
     if not isinstance(raw, str) or len(raw) > 2048:
         raise ValueError('Scan a valid AMTECH label')
@@ -314,6 +336,12 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
                 return jsonify(ok=False, error='Provision this board and verify a recent authenticated hub connection first'), 409
             if checks['identity'] and hub.reported_state.get('hardware_id') != asset.hardware_id:
                 return jsonify(ok=False, error='Reported hardware identity does not match the registered board'), 409
+            if all(checks.values()):
+                state = hub.reported_state or {}
+                if state.get('alert_outbox_count') != 0:
+                    return jsonify(ok=False, error='Wait for factory events to sync and a confirmed empty alert outbox'), 409
+                if state.get('arm_state') != 'disarmed' or state.get('siren_active') or state.get('smoke') != 'normal':
+                    return jsonify(ok=False, error='Finish testing with the hub disarmed, siren off and smoke input normal'), 409
             asset.test_status = 'passed' if all(checks.values()) else 'failed'
             asset.test_results = dict(checks=checks, notes=str(p.get('notes') or '')[:1000], recorded_at=iso(now()))
             audit(db, 'eol_' + asset.test_status, 'Final functional test recorded: ' + asset.test_status, serial, {'checks': checks})

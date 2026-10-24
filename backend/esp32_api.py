@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database import Alert, Device, Esp32Command, Esp32EventReceipt, Esp32Hub, PushToken, SessionLocal, Shop
 from alarm_push import enqueue_alarm_pushes
-from operations_api import claim_manufactured_hub, location_payload, package_for_hub, record_observation
+from operations_api import claim_manufactured_hub, location_payload, package_for_hub, record_observation, factory_event_ids, record_factory_events
 
 ONLINE_SECONDS = 45
 COMMAND_SECONDS = 120
@@ -145,12 +145,14 @@ def validate_state(state):
             if key == 'hardware_id' and not re.fullmatch('[0-9a-f]{12}', value):
                 raise ValueError('Invalid hardware_id')
             result[key] = value
-    for key in ('uptime_ms', 'free_heap_bytes'):
+    for key in ('uptime_ms', 'free_heap_bytes', 'alert_outbox_count'):
         value = state.get(key)
         if value is not None:
             if type(value) is not int or not 0 <= value <= 2**53 - 1:
                 raise ValueError(f'Invalid {key}')
             result[key] = value
+            if key == 'alert_outbox_count' and value > 32:
+                raise ValueError('Invalid alert_outbox_count')
     return result
 
 
@@ -277,7 +279,11 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                 known = {row.id for row in db.query(Esp32EventReceipt.id).filter(
                     Esp32EventReceipt.id.in_(receipt_ids)).all()} if receipt_ids else set()
                 new_receipts = []
+                factory_ids = factory_event_ids(db, serial, events)
                 for event in events:
+                    if event['id'] in factory_ids:
+                        accepted.append(event['id'])
+                        continue
                     receipt_id = f"{serial}:{event['id']}"
                     if receipt_id not in known:
                         timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")) if event.get("timestamp") else hub.last_seen_at
@@ -300,6 +306,7 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                     pending.status = "dispatched"
             else:
                 pending = None
+                accepted = record_factory_events(db, hub, events)
             result = {"ok": True, "paired": bool(hub.shop_id), "command": command_dict(pending),
                       "ack_received": ack_received, "accepted_event_ids": accepted}
             db.commit()
