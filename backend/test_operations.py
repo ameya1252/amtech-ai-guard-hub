@@ -78,6 +78,28 @@ class OperationsTests(unittest.TestCase):
         duplicate=self.scan(order,cam,'camera');self.assertTrue(duplicate.json['duplicate']);self.assertEqual(duplicate.json['order']['counts']['camera'],1)
         self.assertEqual(self.scan(order,self.labels(self.batch('camera'))[0],'camera').status_code,409)
         self.assertEqual(self.op('POST',f'orders/{order}/pack',{}).status_code,409)
+    def test_eol_rejects_unsafe_stale_or_wrong_board_reports(self):
+        from datetime import datetime, timedelta, timezone
+        hub=self.ready();serial=hub['serial'];checks=dict.fromkeys(EOL_CHECKS,True)
+        normal={**fixture.STATE,'hardware_id':'aabbccddeeff','alert_outbox_count':0}
+        for changes in [{'arm_state':'armed'},{'siren_active':True},{'smoke':'alarm'},{'alert_outbox_count':1},{'hardware_id':'001122334455'}]:
+            with self.subTest(changes=changes):
+                with SessionLocal() as db:
+                    stored=db.get(Esp32Hub,serial);stored.reported_state={**normal,**changes};db.commit()
+                self.assertEqual(self.op('POST',f'assets/{serial}/test',{'checks':checks}).status_code,409)
+        with SessionLocal() as db:
+            stored=db.get(Esp32Hub,serial);stored.reported_state=normal;stored.last_seen_at=datetime.now(timezone.utc)-timedelta(minutes=3);db.commit()
+        self.assertEqual(self.op('POST',f'assets/{serial}/test',{'checks':checks}).status_code,409)
+    def test_failed_or_incomplete_eol_cannot_release_or_pack(self):
+        hub=self.ready();serial=hub['serial'];checks=dict.fromkeys(EOL_CHECKS,True)
+        for invalid in [{},dict(checks,identity=1),{k:v for k,v in checks.items()if k!='lte'}]:
+            self.assertEqual(self.op('POST',f'assets/{serial}/test',{'checks':invalid}).status_code,400)
+        failed=self.op('POST',f'assets/{serial}/test',{'checks':dict(checks,lte=False),'notes':'LTE test failed'})
+        self.assertEqual(failed.status_code,200);self.assertEqual(failed.json['asset']['test_status'],'failed')
+        self.assertEqual(self.scan(self.order(),hub,'hub').status_code,409)
+        passed=self.op('POST',f'assets/{serial}/test',{'checks':checks,'notes':'Retested LTE'})
+        self.assertEqual(passed.json['asset']['test_status'],'passed')
+        self.assertEqual(self.scan(self.order(),hub,'hub').status_code,200)
     def test_capacity_limits(self):
         hub=self.ready();order=self.order({'camera':1,'shutter':3,'smoke':1})
         self.assertEqual(self.scan(order,hub,'hub').status_code,409)
