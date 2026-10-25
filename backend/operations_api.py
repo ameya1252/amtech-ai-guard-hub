@@ -380,6 +380,27 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
             order = db.get(PackingOrder, order_id)
             return (jsonify(ok=True, order=order_dict(db, order)) if order else (jsonify(ok=False, error='Order not found'), 404))
 
+    @app.delete('/ops/orders/<order_id>')
+    @private
+    def delete_draft(order_id):
+        with SessionLocal() as db:
+            # Use the same order lock as scanning and finalization: either the
+            # draft is deleted or packing wins; a confirmed package is never lost.
+            order = db.query(PackingOrder).filter_by(id=order_id).with_for_update().first()
+            if not order:
+                return jsonify(ok=True, deleted=False, released_count=0)
+            if order.status != 'draft':
+                return jsonify(ok=False, error='Only draft packing orders can be deleted'), 409
+            items = db.query(Asset).filter_by(order_id=order.id).order_by(Asset.serial).with_for_update().all()
+            released = [asset.serial for asset in items]
+            for asset in items:
+                asset.order_id = None
+            audit(db, 'draft_deleted', 'Packing draft deleted: ' + order.reference, order.hub_serial,
+                  {'order_id': order.id, 'released_serials': released, 'released_count': len(released)})
+            db.delete(order)
+            db.commit()
+            return jsonify(ok=True, deleted=True, released_count=len(released))
+
     @app.post('/ops/orders/<order_id>/scan')
     @private
     def scan(order_id):

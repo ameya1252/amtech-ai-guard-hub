@@ -82,6 +82,38 @@ class OperationsTests(unittest.TestCase):
         hub=self.ready();order=self.order({'camera':1,'shutter':3,'smoke':1})
         self.assertEqual(self.scan(order,hub,'hub').status_code,409)
         self.assertEqual(self.scan(self.order(),self.labels(self.batch('hub_high'))[0],'hub').status_code,409)
+    def test_delete_empty_draft_is_idempotent_and_requires_management_access(self):
+        order=self.order()
+        self.assertEqual(self.op('DELETE',f'orders/{order}',key=False).status_code,401)
+        self.assertEqual(self.op('GET',f'orders/{order}').status_code,200)
+        deleted=self.op('DELETE',f'orders/{order}')
+        self.assertEqual(deleted.status_code,200);self.assertTrue(deleted.json['deleted'])
+        self.assertEqual(deleted.json['released_count'],0)
+        self.assertEqual(self.op('GET',f'orders/{order}').status_code,404)
+        self.assertFalse(self.op('DELETE',f'orders/{order}').json['deleted'])
+        self.assertNotIn(order,[o['id'] for o in self.op('GET','overview').json['orders']])
+        with SessionLocal() as db:self.assertEqual(db.query(OperationsEvent).filter_by(kind='draft_deleted').count(),1)
+    def test_delete_partial_draft_releases_hub_and_accessories_without_deleting_inventory(self):
+        hub=self.ready();order=self.order();camera=self.labels(self.batch('camera'))[0]
+        self.scan(order,hub,'hub');self.scan(order,camera,'camera')
+        deleted=self.op('DELETE',f'orders/{order}')
+        self.assertEqual(deleted.json['released_count'],2)
+        with SessionLocal() as db:
+            self.assertIsNone(db.get(Asset,hub['serial']).order_id)
+            self.assertIsNone(db.get(Asset,camera['serial']).order_id)
+            self.assertEqual(db.get(Asset,hub['serial']).test_status,'passed')
+            self.assertIsNotNone(db.get(Asset,hub['serial']).claim_cipher)
+            self.assertIsNotNone(db.get(Esp32Hub,hub['serial']))
+        replacement=self.order()
+        self.assertEqual(self.scan(replacement,hub,'hub').status_code,200)
+        self.assertEqual(self.scan(replacement,camera,'camera').status_code,200)
+    def test_confirmed_and_dispatched_packages_cannot_be_deleted(self):
+        hub,order=self.complete()
+        self.assertEqual(self.op('DELETE',f'orders/{order}').status_code,409)
+        self.assertEqual(len(self.op('GET',f'orders/{order}').json['order']['items']),5)
+        self.assertEqual(self.op('POST',f'orders/{order}/dispatch',{}).status_code,200)
+        self.assertEqual(self.op('DELETE',f'orders/{order}').status_code,409)
+        self.assertEqual(self.op('GET',f'orders/{order}').json['order']['status'],'dispatched')
     def test_draft_removal_and_cross_order_isolation(self):
         hub=self.ready();order=self.order();cam=self.labels(self.batch('camera'))[0];self.scan(order,hub,'hub');self.scan(order,cam,'camera');other=self.order()
         self.assertEqual(self.scan(other,cam,'camera').status_code,409)
