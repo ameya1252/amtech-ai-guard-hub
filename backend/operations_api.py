@@ -143,6 +143,36 @@ def parse_scan(raw):
         raise ValueError('Invalid AMTECH serial')
     return raw
 
+class ProvisionConflict(Exception):
+    pass
+
+def issue_identity(db, serial, p):
+    hardware = p.get('hardware_id', '')
+    if not isinstance(hardware, str):
+        raise ValueError('Read the board MAC address before provisioning')
+    hardware = hardware.replace(':', '').lower()
+    if not re.fullmatch('[0-9a-f]{12}', hardware):
+        raise ValueError('Read the board MAC address before provisioning')
+    # Match pairing/sync's lock order: hub before manufacturing asset.
+    hub = db.query(Esp32Hub).filter_by(serial=serial).with_for_update().first()
+    asset = db.query(Asset).filter_by(serial=serial).with_for_update().first()
+    if not asset or asset.kind != 'hub_base':
+        raise ProvisionConflict('A supported Base hub label is required')
+    if not hub or hub.shop_id or asset.order_id or asset.test_status == 'passed':
+        raise ProvisionConflict('A released or claimed hub cannot be reprovisioned')
+    if asset.hardware_id and asset.hardware_id != hardware:
+        raise ProvisionConflict('This serial is already bound to another physical board')
+    if not asset.token_cipher:
+        token = secrets.token_urlsafe(32)
+        asset.token_cipher = seal(token)
+        hub.token_hash = digest(token)
+    asset.hardware_id = hardware
+    asset.pcb_revision = str(p.get('pcb_revision') or '')[:64]
+    asset.firmware_version = str(p.get('firmware_version') or '')[:128]
+    audit(db, 'identity_provisioned', 'Device credentials issued for its physical board', serial)
+    return dict(device_serial=serial, device_token=unseal(asset.token_cipher),
+                backend_url=os.getenv('PUBLIC_BACKEND_URL', 'https://amtech-ai-guard-hub-production.up.railway.app'), hardware_id=hardware)
+
 def register_operations_routes(app, auth_required, owned_shop_or_response):
     def private(view):
         @wraps(view)
@@ -158,6 +188,8 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
                 return jsonify(ok=False, error='A JSON object is required'), 400
             try:
                 response = view(*args, **kwargs)
+            except ProvisionConflict as exc:
+                return jsonify(ok=False, error=str(exc)), 409
             except (ValueError, TypeError) as exc:
                 return jsonify(ok=False, error=str(exc)), 400
             except IntegrityError:
@@ -289,33 +321,10 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
     @private
     def provision(serial):
         p = request.get_json(silent=True) or {}
-        hardware = p.get('hardware_id', '')
-        if not isinstance(hardware, str):
-            raise ValueError('Read the board MAC address before provisioning')
-        hardware = hardware.replace(':', '').lower()
-        if not re.fullmatch('[0-9a-f]{12}', hardware):
-            raise ValueError('Read the board MAC address before provisioning')
         with SessionLocal() as db:
-            # Match pairing/sync's lock order: hub before manufacturing asset.
-            hub = db.query(Esp32Hub).filter_by(serial=serial).with_for_update().first()
-            asset = db.query(Asset).filter_by(serial=serial).with_for_update().first()
-            if not asset or asset.kind != 'hub_base':
-                return jsonify(ok=False, error='A supported Base hub label is required'), 409
-            if hub.shop_id or asset.test_status == 'passed':
-                return jsonify(ok=False, error='A released or claimed hub cannot be reprovisioned'), 409
-            if asset.hardware_id and asset.hardware_id != hardware:
-                return jsonify(ok=False, error='This serial is already bound to another physical board'), 409
-            if not asset.token_cipher:
-                token = secrets.token_urlsafe(32)
-                asset.token_cipher = seal(token)
-                hub.token_hash = digest(token)
-            asset.hardware_id = hardware
-            asset.pcb_revision = str(p.get('pcb_revision') or '')[:64]
-            asset.firmware_version = str(p.get('firmware_version') or '')[:128]
-            audit(db, 'identity_provisioned', 'Device credentials issued for its physical board', serial)
+            identity = issue_identity(db, serial, p)
             db.commit()
-            return jsonify(ok=True, device_serial=serial, device_token=unseal(asset.token_cipher),
-                backend_url=os.getenv('PUBLIC_BACKEND_URL', 'https://amtech-ai-guard-hub-production.up.railway.app'), hardware_id=hardware)
+            return jsonify(ok=True, **identity)
 
     @app.post('/ops/assets/<serial>/test')
     @private
@@ -521,3 +530,6 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
                 return error
             hub = db.query(Esp32Hub).filter_by(shop_id=shop_id).first()
             return jsonify(ok=True, package=package_for_hub(db, hub.serial) if hub else None)
+
+    from factory_api import register_factory_routes
+    register_factory_routes(app, private, issue_identity)

@@ -99,3 +99,11 @@ Legacy unclaimed hubs retain their prior outbox behavior. EOL release requires
 new firmware to report an empty alert outbox, with the hub disarmed, siren off and
 smoke input normal. This prevents stale factory smoke/panic tests becoming the
 buyer's first notifications. Customer alarm rules are unchanged.
+
+## Browser USB station
+
+The protected Vercel portal now offers an integrated browser station alongside the Python tool. `GET /ops/factory/release` returns the approved checksum manifest; firmware bytes stay in a private local `.nettra` bundle selected on the station laptop. `POST /ops/factory/prepare` validates the board/release confirmation and issues only that board's generated NVS image. `POST /ops/factory/runs/:id/verify` records matching readback, and `GET /ops/factory/runs/:id` verifies the subsequent fresh hardware/firmware cloud report. These endpoints use the existing private operations key; no master key is returned to the browser. Raw `/provision` remains blocked by the portal proxy.
+
+`ops_factory_runs` records preparations and readback status without credentials or image bytes. Interrupted runs can resume on their original board; unknown existing layouts/identities and released units are blocked. Preparation/USB verification does not pass EOL automatically. The Espressif NVS generator runs in a private temporary directory and removes its identity image on exit.
+
+Run `python -m unittest test_esp32 test_camera_advisory test_alarm_push test_operations test_factory` for backend regression, including real image generation, failure rollback, identity binding, recovery and cloud freshness. The station needs desktop Chrome/Edge, HTTPS and a data-capable USB connection. Keep Vercel Authentication enabled for all deployments.

@@ -7,3 +7,6 @@ build/
 install/
 luckfox_pico_rknn_example/
 .DS_Store
+
+# Private factory firmware bundles
+*.nettra

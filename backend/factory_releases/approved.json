@@ -1,0 +1,39 @@
+{
+  "id": "nettra-base-usb-20261025-1",
+  "firmware_version": "nettra-usb-20261025-1",
+  "chip": "ESP32-S3",
+  "flash_size": 16777216,
+  "factory_offset": 8462336,
+  "factory_size": 24576,
+  "source_commit": "aad41607d64d2d90016e25f61335a369ad658e97",
+  "files": [
+    {
+      "address": 0,
+      "name": "bootloader.bin",
+      "size": 21056,
+      "sha256": "856310a9ef3c4fdd58ca1a880607d4565dccf5b8b2d6b62e7f5c64345ea17348",
+      "md5": "d7033fed723ef1181e681cfb2f95bdbe"
+    },
+    {
+      "address": 32768,
+      "name": "partition-table.bin",
+      "size": 3072,
+      "sha256": "c9249dc1bed015ab4d12cf604f02c827ddd6fecadbccc5eaedd272133e4b6902",
+      "md5": "0484a2594eae918f09afeb7290932c87"
+    },
+    {
+      "address": 8454144,
+      "name": "ota_data_initial.bin",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
+      "md5": "84d04c9d6cc8ef35bf825d51a5277699"
+    },
+    {
+      "address": 65536,
+      "name": "hello_world.bin",
+      "size": 1156128,
+      "sha256": "f5b314450121d9fb9f59160ef132474192becdddce27a1a7a9c2bff4e8d86d03",
+      "md5": "942fbf4e7d4ce30b9dc1243b3a4ce9e3"
+    }
+  ]
+}

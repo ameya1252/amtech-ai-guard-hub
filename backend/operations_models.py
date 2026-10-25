@@ -64,3 +64,15 @@ class OperationsEvent(Base):
     message = Column(String(1024), nullable=False)
     details = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=now, index=True)
+
+class FactoryRun(Base):
+    __tablename__ = 'ops_factory_runs'
+    id = Column(String(64), primary_key=True)
+    serial = Column(String(128), ForeignKey('ops_assets.serial'), nullable=False, index=True)
+    hardware_id = Column(String(32), nullable=False)
+    release_id = Column(String(64), nullable=False)
+    operation = Column(String(16), nullable=False)
+    image_sha256 = Column(String(64), nullable=False)
+    status = Column(String(16), nullable=False, default='issued')
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
