@@ -1540,7 +1540,7 @@ def health():
 
 register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes)
 register_camera_advisory_routes(app, lambda messages: send_expo_push_messages(messages))
-register_operations_routes(app, auth_required, owned_shop_or_response)
+register_operations_routes(app, auth_required, owned_shop_or_response, lambda: r2_client())
 start_alarm_push_worker(lambda messages: send_expo_push_messages(messages))
 
 

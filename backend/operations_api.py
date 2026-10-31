@@ -173,7 +173,7 @@ def issue_identity(db, serial, p):
     return dict(device_serial=serial, device_token=unseal(asset.token_cipher),
                 backend_url=os.getenv('PUBLIC_BACKEND_URL', 'https://amtech-ai-guard-hub-production.up.railway.app'), hardware_id=hardware)
 
-def register_operations_routes(app, auth_required, owned_shop_or_response):
+def register_operations_routes(app, auth_required, owned_shop_or_response, storage_client=None):
     def private(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
@@ -182,7 +182,8 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
                 return jsonify(ok=False, error='Operations access is not configured'), 503
             if not hmac.compare_digest(request.headers.get('X-AMTECH-OPERATIONS-KEY', '').encode(), expected.encode()):
                 return jsonify(ok=False, error='Operations service access required'), 401
-            if request.content_length and request.content_length > 32768:
+            image_upload = request.method == 'PUT' and re.fullmatch(r'/ops/ota/releases/[A-Za-z0-9_.-]{1,64}/image', request.path)
+            if request.content_length and request.content_length > (0x400000 if image_upload else 32768):
                 return jsonify(ok=False, error='Request too large'), 413
             if request.method == 'POST' and not isinstance(request.get_json(silent=True), dict):
                 return jsonify(ok=False, error='A JSON object is required'), 400
@@ -533,3 +534,5 @@ def register_operations_routes(app, auth_required, owned_shop_or_response):
 
     from factory_api import register_factory_routes
     register_factory_routes(app, private, issue_identity)
+    from ota_api import register_ota_routes
+    register_ota_routes(app, private, storage_client)

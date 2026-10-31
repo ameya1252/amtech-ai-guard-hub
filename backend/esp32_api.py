@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database import Alert, Device, Esp32Command, Esp32EventReceipt, Esp32Hub, PushToken, SessionLocal, Shop
 from alarm_push import enqueue_alarm_pushes
+from ota_api import validate_report, sync_ota
 from operations_api import claim_manufactured_hub, location_payload, package_for_hub, record_observation, factory_event_ids, record_factory_events
 
 ONLINE_SECONDS = 45
@@ -225,6 +226,7 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
             return jsonify({"ok": False, "error": "JSON object required"}), 400
         try:
             state = validate_state(payload.get("state"))
+            ota_report = validate_report(payload.get("ota"))
             ack = payload.get("ack")
             if ack is not None and (not isinstance(ack, dict) or ack.get("status") not in ("applied", "rejected")
                                     or not isinstance(ack.get("id"), str) or len(ack["id"]) > 128):
@@ -309,6 +311,13 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                 accepted = record_factory_events(db, hub, events)
             result = {"ok": True, "paired": bool(hub.shop_id), "command": command_dict(pending),
                       "ack_received": ack_received, "accepted_event_ids": accepted}
+            try:
+                offer = sync_ota(db, hub, ota_report)
+            except ValueError as exc:
+                db.rollback()
+                return jsonify(ok=False, error=str(exc)), 400
+            if ota_report is not None:
+                result['ota'] = offer
             db.commit()
         if new_alerts:
             wake_alarm_pushes()
