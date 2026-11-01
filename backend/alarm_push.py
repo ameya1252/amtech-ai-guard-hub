@@ -75,7 +75,7 @@ def deliver_pending_alarm_pushes(send_push, limit=20):
             label = alert.event_type.replace("-", " ").title()
             message = {"to": token.expo_push_token, "title": f"AMTECH: {label}",
                        "body": f"{label} at {shop.shop_name}. Check the hub's current status.",
-                       "sound": "default", "channelId": "alerts",
+                       "sound": "default", "channelId": "alerts", "priority": "high",
                        "data": {"shop_id": shop.id, "alert_id": alert.id, "event_type": alert.event_type}}
             token_id, token_value = token.id, token.expo_push_token
 

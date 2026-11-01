@@ -117,7 +117,7 @@ def register_camera_advisory_routes(app, send_push):
             alert_id = receipt.alert_id
             messages = [{"to": row.expo_push_token, "title": f"Nettra: Camera {camera_id} advisory",
                          "body": "Possible camera interference detected. Please check your camera's live view in its camera app.",
-                         "channelId": "camera-advisories", "sound": "default",
+                         "channelId": "camera-advisories", "sound": "default", "priority": "high",
                          "data": {"shop_id": shop.id, "alert_id": alert_id,
                                   "event_type": f"camera-interference-{camera_id}", "camera_id": camera_id}}
                         for row in tokens]

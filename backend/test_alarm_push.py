@@ -54,6 +54,17 @@ class AlarmPushTests(unittest.TestCase):
             row = db.query(AlarmPushDelivery).one()
             self.assertEqual((row.status, row.ticket_id), ('sent', 'expo-ticket'))
 
+    def test_alarm_uses_high_transport_priority_and_its_security_channel(self):
+        self.event('panic')
+        push = Mock(return_value=OK)
+        deliver_pending_alarm_pushes(push)
+        message = push.call_args.args[0][0]
+        self.assertEqual(message['priority'], 'high')
+        self.assertEqual(message['channelId'], 'alerts')
+        self.assertEqual(message['sound'], 'default')
+        self.assertEqual(message['data']['shop_id'], self.shop_id)
+        self.assertEqual(message['data']['event_type'], 'panic')
+
     def test_successful_phone_is_not_retried_when_another_phone_fails(self):
         self.add_phone('two')
         self.event('intrusion')

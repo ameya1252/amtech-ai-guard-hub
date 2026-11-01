@@ -40,6 +40,7 @@ class CameraAdvisoryTests(unittest.TestCase):
             self.assertEqual(push.call_count, 1)
             message = push.call_args.args[0][0]
             self.assertEqual(message['channelId'], 'camera-advisories')
+            self.assertEqual(message['priority'], 'high')
             self.assertIn('Possible camera interference', message['body'])
             self.assertEqual(message['data']['camera_id'], 1)
         after = self.status()
