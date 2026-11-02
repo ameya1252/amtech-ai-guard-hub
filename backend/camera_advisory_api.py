@@ -1,9 +1,10 @@
-"""App-only Camera 1 advisory. Never queues alarm commands, SMS or voice calls.
+"""App-only per-camera advisory. Never queues alarm commands, SMS or voice calls.
 
 Durable reservation precedes Expo dispatch. Uncertain outcomes are suppressed,
 not blindly resent. A ticket confirms Expo acceptance, not phone delivery.
 """
 import hmac
+import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -29,10 +30,10 @@ def register_camera_advisory_routes(app, send_push):
         payload = request.get_json(silent=True)
         if (not isinstance(payload, dict) or not isinstance(payload.get("event_id"), str)
                 or not IDENTIFIER.fullmatch(payload["event_id"])
-                or type(payload.get("camera_id")) is not int or payload["camera_id"] != 1):
-            return jsonify(ok=False, error="A valid event ID and Camera 1 are required"), 400
+                or type(payload.get("camera_id")) is not int or payload["camera_id"] not in (1, 2)):
+            return jsonify(ok=False, error="A valid event ID and Camera 1 or 2 are required"), 400
         event_id, camera_id = payload["event_id"], payload["camera_id"]
-        receipt_id = f"{serial}:{event_id}"
+        receipt_id = f"{serial}:{event_id}" if camera_id == 1 else f"{serial}:cam2:{hashlib.sha256(event_id.encode()).hexdigest()}"
         now = datetime.now(timezone.utc)
 
         def reply(status, until=None):
@@ -46,6 +47,8 @@ def register_camera_advisory_routes(app, send_push):
                 return jsonify(ok=False, error="Invalid device credentials"), 401
             if not hub.shop_id:
                 return reply("failed")
+            if camera_id == 2 and not any(c.get('camera_id') == 2 and c.get('enabled') is True for c in (hub.reported_state or {}).get('cameras', [])):
+                return jsonify(ok=False, error='Camera 2 is not configured on this hub'), 409
             receipt = db.get(Esp32CameraAdvisoryReceipt, receipt_id)
             if receipt:
                 if receipt.camera_id != camera_id:

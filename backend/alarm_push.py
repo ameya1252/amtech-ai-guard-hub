@@ -72,7 +72,7 @@ def deliver_pending_alarm_pushes(send_push, limit=20):
                 db.commit()
                 log.warning("Alarm push retry window exhausted delivery=%s", delivery_id)
                 continue
-            label = alert.event_type.replace("-", " ").title()
+            label = "Camera 2 intrusion" if alert.event_type == "intrusion-2" else alert.event_type.replace("-", " ").title()
             message = {"to": token.expo_push_token, "title": f"AMTECH: {label}",
                        "body": f"{label} at {shop.shop_name}. Check the hub's current status.",
                        "sound": "default", "channelId": "alerts", "priority": "high",

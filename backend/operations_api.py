@@ -21,7 +21,7 @@ from database import Alert, Esp32Command, Esp32Hub, SessionLocal, Shop
 from operations_models import Asset, InstallationLocation, LabelBatch, OperationsEvent, PackingOrder, SerialCounter
 
 KINDS = {'hub_base': 'B', 'hub_high': 'H', 'camera': 'C', 'shutter': 'S', 'smoke': 'D'}
-CAPACITY = {'camera': 1, 'shutter': 2, 'smoke': 1}
+CAPACITY = {'camera': 2, 'shutter': 2, 'smoke': 1}
 EOL_CHECKS = ('identity', 'sensors', 'siren', 'lte', 'ethernet', 'wifi', 'camera', 'app')
 SERIAL = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 
@@ -438,12 +438,16 @@ def register_operations_routes(app, auth_required, owned_shop_or_response, stora
                 if asset.kind != 'hub_base':
                     return jsonify(ok=False, error='High-End capabilities are not qualified yet'), 409
                 if any(order.expected[k] > CAPACITY[k] for k in CAPACITY):
-                    return jsonify(ok=False, error='Base supports at most 1 camera, 2 shutter inputs and 1 smoke input'), 409
+                    return jsonify(ok=False, error='Base supports at most 2 cameras, 2 shutter inputs and 1 smoke input'), 409
                 if asset.test_status != 'passed':
                     return jsonify(ok=False, error='The hub must pass EOL testing before packing'), 409
                 hub = db.get(Esp32Hub, serial)
                 if hub.shop_id:
                     return jsonify(ok=False, error='This hub is already customer-owned'), 409
+                if order.expected.get('camera', 0) > 1:
+                    from esp32_camera_api import supports_cameras
+                    if not supports_cameras(hub.reported_state):
+                        return jsonify(ok=False, error='Update this hub to multi-camera firmware before packing two cameras'), 409
                 order.hub_serial = serial
             else:
                 if not order.hub_serial:
@@ -484,6 +488,11 @@ def register_operations_routes(app, auth_required, owned_shop_or_response, stora
             order = db.query(PackingOrder).filter_by(id=order_id).with_for_update().first()
             if not order:
                 return jsonify(ok=False, error='Order not found'), 404
+            if order.expected.get('camera', 0) > 1 and ((action == 'pack' and order.status == 'draft') or (action == 'dispatch' and order.status == 'packed')):
+                from esp32_camera_api import supports_cameras
+                device = db.get(Esp32Hub, order.hub_serial) if order.hub_serial else None
+                if device is None or not supports_cameras(device.reported_state):
+                    return jsonify(ok=False, error='Two-camera packages require confirmed multi-camera hub firmware'), 409
             if action == 'pack' and order.status == 'draft':
                 if not order_dict(db, order)['complete']:
                     return jsonify(ok=False, error='Scan the hub and every required accessory before confirming'), 409

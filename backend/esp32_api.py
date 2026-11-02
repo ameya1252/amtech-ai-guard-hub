@@ -22,8 +22,13 @@ CAPABILITIES = {
     "camera_slots": 1, "camera_setup": False, "battery": False, "media": False,
     "remote_panic": False,
 }
-EVENT_TYPES = {"intrusion", "shutter-1", "shutter-2", "panic", "smoke"}
+EVENT_TYPES = {"intrusion", "shutter-1", "shutter-2", "panic", "smoke", "intrusion-2"}
 IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def capabilities_for_state(state):
+    from esp32_camera_api import supports_cameras
+    return {**CAPABILITIES, **({"camera_slots": 2, "camera_setup": True} if supports_cameras(state) else {})}
 
 
 def secret_hash(value):
@@ -68,7 +73,7 @@ def status_dict(db, shop, hub):
     pending = latest if latest and latest.status in ACTIVE else None
     state = hub.reported_state or {}
     return {
-        "ok": True, "shop_id": shop.id, "device_type": "esp32", "capabilities": CAPABILITIES,
+        "ok": True, "shop_id": shop.id, "device_type": "esp32", "capabilities": capabilities_for_state(state),
         "armed": state.get("arm_state") == "armed", "arm_state": state.get("arm_state", "unknown"),
         "hub_online": online(hub), "last_seen_at": utc(hub.last_seen_at).isoformat() if hub.last_seen_at else None,
         "battery_level": None, "pending_command": pending.name if pending else None,
@@ -90,7 +95,7 @@ def esp32_status(shop):
 def esp32_metadata(shop_id):
     with SessionLocal() as db:
         hub = hub_for_shop(db, shop_id)
-        return {"device_type": "esp32", "capabilities": CAPABILITIES} if hub else {"device_type": "rv1106"}
+        return {"device_type": "esp32", "capabilities": capabilities_for_state(hub.reported_state)} if hub else {"device_type": "rv1106"}
 
 
 def queue_command(shop_id, name):
@@ -154,6 +159,49 @@ def validate_state(state):
             result[key] = value
             if key == 'alert_outbox_count' and value > 32:
                 raise ValueError('Invalid alert_outbox_count')
+    if any(key in state for key in ("camera_protocol_version", "camera_capacity", "cameras")):
+        if type(state.get("camera_protocol_version")) is not int or state["camera_protocol_version"] != 1 or type(state.get("camera_capacity")) is not int or state["camera_capacity"] != 2:
+            raise ValueError("Unsupported camera protocol")
+        cameras = state.get("cameras")
+        if not isinstance(cameras, list) or len(cameras) != 2:
+            raise ValueError("Both camera slots must be reported")
+        normalized = []
+        for camera in cameras:
+            if not isinstance(camera, dict) or type(camera.get("camera_id")) is not int or camera["camera_id"] not in (1, 2):
+                raise ValueError("Invalid camera slot")
+            item = {"camera_id": camera["camera_id"]}
+            for key in ("enabled", "online", "human_active", "ready", "protected"):
+                if type(camera.get(key)) is not bool:
+                    raise ValueError("Invalid per-camera status")
+                item[key] = camera[key]
+            if not item['enabled'] and any(item[k] for k in ('online', 'ready', 'human_active', 'protected')):
+                raise ValueError("A disabled camera cannot report active protection")
+            if item['ready'] and not item['online']:
+                raise ValueError("An offline camera cannot be ready")
+            if item['enabled'] and 'host' in camera:
+                import ipaddress
+                try:
+                    item['host'] = str(ipaddress.IPv4Address(camera['host']))
+                except (ValueError, TypeError):
+                    raise ValueError('Invalid camera address') from None
+                if type(camera.get('port')) is not int or not 1 <= camera['port'] <= 65535:
+                    raise ValueError('Invalid camera port')
+                item['port'] = camera['port']
+            normalized.append(item)
+        normalized.sort(key=lambda item: item['camera_id'])
+        if [c['camera_id'] for c in normalized] != [1, 2] or not normalized[0]['enabled']:
+            raise ValueError("Camera 1 must remain enabled and slot IDs must be unique")
+        result.update(camera_protocol_version=1, camera_capacity=2, cameras=normalized)
+        for key in ('camera_config_revision', 'camera_config_staged_revision'):
+            value = state.get(key)
+            if not isinstance(value, str) or not (value == 'factory' or re.fullmatch('[0-9a-f]{32}', value)):
+                raise ValueError('Invalid camera configuration revision')
+            result[key] = value
+        value = state.get('camera_config_error')
+        if value is not None:
+            if not isinstance(value, str) or len(value) > 256:
+                raise ValueError('Invalid camera configuration error')
+            result['camera_config_error'] = value
     return result
 
 
@@ -239,6 +287,8 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                         or not IDENTIFIER.fullmatch(event["id"]) or not isinstance(event.get("event_type"), str)
                         or event["event_type"] not in EVENT_TYPES):
                     raise ValueError("Invalid alert event")
+                if event['event_type'] == 'intrusion-2' and not any(c['camera_id'] == 2 and c['enabled'] for c in state.get('cameras', [])):
+                    raise ValueError('Camera 2 is not configured on this hub')
                 if event.get("timestamp"):
                     if not isinstance(event["timestamp"], str):
                         raise ValueError("Invalid alert timestamp")
@@ -318,6 +368,15 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                 return jsonify(ok=False, error=str(exc)), 400
             if ota_report is not None:
                 result['ota'] = offer
+            from esp32_camera_api import sync_camera_config
+            from cryptography.fernet import InvalidToken
+            try:
+                camera_config = sync_camera_config(db, hub)
+            except (ValueError, KeyError, InvalidToken):
+                camera_config = None
+                app.logger.error('Camera configuration cannot be decrypted for device sync')
+            if camera_config is not None:
+                result['camera_config'] = camera_config
             db.commit()
         if new_alerts:
             wake_alarm_pushes()

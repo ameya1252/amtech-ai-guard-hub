@@ -132,7 +132,7 @@ class CameraAdvisoryTests(unittest.TestCase):
                 self.assertEqual(self.send(f'mode-{index}').json['status'], 'accepted')
                 self.assertEqual(self.status()['arm_state'], state['arm_state'])
         self.assertEqual(self.send(headers={**self.device, 'X-AMTECH-DEVICE-TOKEN': 'wrong'}).status_code, 401)
-        self.assertEqual(self.send(camera=2).status_code, 400)  # Only Camera 1 is implemented.
+        self.assertEqual(self.send(camera=2).status_code, 409)  # Camera 2 must be configured on this hub.
         self.assertEqual(self.send(camera=True).status_code, 400)
         self.assertEqual(self.send(event='../bad').status_code, 400)
 

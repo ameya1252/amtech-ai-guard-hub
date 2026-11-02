@@ -104,6 +104,31 @@ class OperationsTests(unittest.TestCase):
         hub=self.ready();order=self.order({'camera':1,'shutter':3,'smoke':1})
         self.assertEqual(self.scan(order,hub,'hub').status_code,409)
         self.assertEqual(self.scan(self.order(),self.labels(self.batch('hub_high'))[0],'hub').status_code,409)
+    def test_two_camera_packing_requires_confirmed_firmware_support(self):
+        hub=self.ready();order=self.order({'camera':2,'shutter':2,'smoke':1})
+        rejected=self.scan(order,hub,'hub')
+        self.assertEqual(rejected.status_code,409)
+        self.assertIn('multi-camera firmware',rejected.json['error'])
+        with SessionLocal() as db:
+            row=db.get(Esp32Hub,hub['serial'])
+            row.reported_state={**row.reported_state,'camera_protocol_version':1,'camera_capacity':2}
+            db.commit()
+        self.assertEqual(self.scan(order,hub,'hub').status_code,200)
+    def test_two_camera_package_rechecks_support_before_pack_and_dispatch(self):
+        hub=self.ready();serial=hub['serial'];order=self.order({'camera':2,'shutter':2,'smoke':1})
+        with SessionLocal() as db:
+            row=db.get(Esp32Hub,serial);original=dict(row.reported_state)
+            upgraded={**original,'camera_protocol_version':1,'camera_capacity':2}
+            row.reported_state=upgraded;db.commit()
+        self.assertEqual(self.scan(order,hub,'hub').status_code,200)
+        for kind,count in [('camera',2),('shutter',2),('smoke',1)]:
+            for label in self.labels(self.batch(kind,count)):self.assertEqual(self.scan(order,label,kind).status_code,200)
+        with SessionLocal() as db:db.get(Esp32Hub,serial).reported_state=original;db.commit()
+        self.assertEqual(self.op('POST',f'orders/{order}/pack',{}).status_code,409)
+        with SessionLocal() as db:db.get(Esp32Hub,serial).reported_state=upgraded;db.commit()
+        self.assertEqual(self.op('POST',f'orders/{order}/pack',{}).status_code,200)
+        with SessionLocal() as db:db.get(Esp32Hub,serial).reported_state=original;db.commit()
+        self.assertEqual(self.op('POST',f'orders/{order}/dispatch',{}).status_code,409)
     def test_delete_empty_draft_is_idempotent_and_requires_management_access(self):
         order=self.order()
         self.assertEqual(self.op('DELETE',f'orders/{order}',key=False).status_code,401)

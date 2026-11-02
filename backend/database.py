@@ -174,6 +174,15 @@ class Esp32Hub(Base):
     reported_state = Column(JSON, nullable=True)
 
 
+class Esp32CameraConfig(Base):
+    __tablename__ = "esp32_camera_configs"
+
+    serial = Column(String(128), ForeignKey("esp32_hubs.serial"), primary_key=True)
+    revision = Column(String(32), nullable=False)
+    encrypted_config = Column(String(8192), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
 class Esp32Command(Base):
     __tablename__ = "esp32_commands"
 

@@ -1538,6 +1538,8 @@ def health():
     return jsonify({"status": "ok", "esp32_api_version": 1})
 
 
+from esp32_camera_api import register_camera_config_routes
+register_camera_config_routes(app, auth_required, owned_shop_or_response)
 register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes)
 register_camera_advisory_routes(app, lambda messages: send_expo_push_messages(messages))
 register_operations_routes(app, auth_required, owned_shop_or_response, lambda: r2_client())
