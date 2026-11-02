@@ -236,6 +236,36 @@ class Esp32CameraAdvisoryReceipt(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
+class EvidenceRecorder(Base):
+    __tablename__ = "evidence_recorders"
+
+    serial = Column(String(128), ForeignKey("esp32_hubs.serial"), primary_key=True)
+    shop_id = Column(String(128), ForeignKey("shops.id"), nullable=False)
+    token_hash = Column(String(64), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+    camera_ids = Column(JSON, nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    cameras = Column(JSON, nullable=True)
+
+
+class AlertEvidence(Base):
+    __tablename__ = "alert_evidence"
+    __table_args__ = (UniqueConstraint("alert_id", "camera_id", name="uq_alert_evidence_camera"),)
+
+    id = Column(String(128), primary_key=True)
+    alert_id = Column(String(128), ForeignKey("alerts.id"), nullable=False, index=True)
+    serial = Column(String(128), ForeignKey("esp32_hubs.serial"), nullable=False, index=True)
+    camera_id = Column(Integer, nullable=False)
+    status = Column(String(24), nullable=False, default="pending")
+    event_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    lease_id = Column(String(128), nullable=True)
+    lease_until = Column(DateTime(timezone=True), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    manifest = Column(JSON, nullable=True)
+    reason = Column(String(64), nullable=True)
+
+
 def database_url():
     url = os.getenv("DATABASE_URL")
     if not url:

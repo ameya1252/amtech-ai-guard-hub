@@ -110,6 +110,8 @@ def register_camera_advisory_routes(app, send_push):
                 db.add(alert)
                 db.flush()
                 receipt.alert_id = alert.id
+                from evidence_api import enqueue_evidence
+                enqueue_evidence(db, hub, alert)
             tokens = db.query(PushToken).filter(PushToken.user_id == shop.user_id).all()
             if not tokens:
                 receipt.status = "failed"

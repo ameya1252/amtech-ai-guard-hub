@@ -1528,7 +1528,25 @@ def alerts(shop_id):
             .order_by(Alert.timestamp.desc())
             .all()
         )
-        return jsonify({"ok": True, "shop_id": shop_id, "alerts": [alert_to_dict(row) for row in alert_rows]})
+        from database import AlertEvidence
+        from evidence_api import describe
+        evidence = db.query(AlertEvidence).join(Alert, Alert.id == AlertEvidence.alert_id).filter(Alert.shop_id == shop_id).all()
+        by_alert = {}
+        thumbnails = set()
+        for item in evidence:
+            by_alert.setdefault(item.alert_id, []).append(describe(item))
+            if (item.status in ('ready', 'partial') and item.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+                    and 'thumbnail' in (item.manifest or {}).get('objects', {})):
+                thumbnails.add(item.alert_id)
+        result = []
+        for row in alert_rows:
+            value = alert_to_dict(row)
+            value['evidence'] = by_alert.get(row.id, [])
+            value['has_thumbnail'] = row.id in thumbnails
+            result.append(value)
+        response = jsonify({"ok": True, "shop_id": shop_id, "alerts": result})
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
     finally:
         db.close()
 
@@ -1540,6 +1558,8 @@ def health():
 
 from esp32_camera_api import register_camera_config_routes
 register_camera_config_routes(app, auth_required, owned_shop_or_response)
+from evidence_api import register_evidence_routes
+register_evidence_routes(app, auth_required, owned_shop_or_response)
 register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes)
 register_camera_advisory_routes(app, lambda messages: send_expo_push_messages(messages))
 register_operations_routes(app, auth_required, owned_shop_or_response, lambda: r2_client())

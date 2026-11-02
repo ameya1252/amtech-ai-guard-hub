@@ -352,6 +352,8 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                     tokens = db.query(PushToken).filter_by(user_id=shop.user_id).all()
                     for alert in new_alerts:
                         enqueue_alarm_pushes(db, alert, shop, tokens=tokens)
+                        from evidence_api import enqueue_evidence
+                        enqueue_evidence(db, hub, alert)
                 expire_commands(db, serial)
                 pending = db.query(Esp32Command).filter(Esp32Command.serial == serial, Esp32Command.status.in_(ACTIVE)).first()
                 if pending:
