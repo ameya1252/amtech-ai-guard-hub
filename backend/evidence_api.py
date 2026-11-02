@@ -38,8 +38,9 @@ def utc(value):
 
 def storage_ready():
     # A separate, private bucket is mandatory. Never fall back to the public RV bucket.
-    return all(os.getenv(k) for k in ('NETTRA_MEDIA_BUCKET', 'NETTRA_MEDIA_ACCESS_KEY_ID',
-                                    'NETTRA_MEDIA_SECRET_ACCESS_KEY', 'R2_ACCOUNT_ID'))
+    return (all(os.getenv(k) for k in ('NETTRA_MEDIA_BUCKET', 'NETTRA_MEDIA_ACCESS_KEY_ID',
+                                     'NETTRA_MEDIA_SECRET_ACCESS_KEY', 'R2_ACCOUNT_ID'))
+            and os.getenv('NETTRA_MEDIA_BUCKET') != os.getenv('R2_BUCKET_NAME'))
 
 
 def storage():
@@ -221,9 +222,11 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             # The recorder row lock serializes claims on PostgreSQL across workers.
             # Return an existing active lease again after a lost poll response.
             # Waiting ten minutes to reclaim it would lose the pre-event buffer.
-            active_job = db.query(AlertEvidence).filter_by(serial=recorder.serial, status='capturing').filter(
+            scoped = db.query(AlertEvidence).join(Alert, Alert.id == AlertEvidence.alert_id).filter(
+                AlertEvidence.serial == recorder.serial, Alert.shop_id == recorder.shop_id)
+            active_job = scoped.filter(AlertEvidence.status == 'capturing').filter(
                 AlertEvidence.lease_until > timestamp).order_by(AlertEvidence.event_at).first()
-            jobs = [active_job] if active_job else db.query(AlertEvidence).filter_by(serial=recorder.serial).filter(
+            jobs = [active_job] if active_job else scoped.filter(
                 AlertEvidence.status.in_(('pending', 'capturing')),
                 or_(AlertEvidence.lease_until.is_(None), AlertEvidence.lease_until < timestamp)).order_by(AlertEvidence.event_at).limit(1).all()
             result = []
@@ -246,7 +249,12 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
                 from esp32_camera_api import unseal
                 current = db.get(Esp32CameraConfig, recorder.serial)
                 if current and current.revision == (hub.reported_state or {}).get('camera_config_revision'):
-                    config = unseal(current)
+                    from cryptography.fernet import InvalidToken
+                    try:
+                        config = unseal(current)
+                    except (InvalidToken, KeyError, ValueError):
+                        # Broken Camera 2 configuration must not stop Camera 1 jobs.
+                        app.logger.error('Recorder cannot decrypt active Camera 2 configuration')
             db.commit()
             enabled = {1} | {c.get('camera_id') for c in (hub.reported_state or {}).get('cameras', []) if c.get('enabled')}
             response = jsonify(ok=True, server_time=timestamp.isoformat(), camera_ids=[c for c in recorder.camera_ids if c in enabled],
@@ -267,7 +275,9 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             recorder = recorder_auth(db)
             if not recorder:
                 return jsonify(ok=False, error='Recorder authentication required'), 401
-            job = db.query(AlertEvidence).filter_by(id=job_id, serial=recorder.serial).with_for_update().first()
+            job = db.query(AlertEvidence).join(Alert, Alert.id == AlertEvidence.alert_id).filter(
+                AlertEvidence.id == job_id, AlertEvidence.serial == recorder.serial,
+                Alert.shop_id == recorder.shop_id).with_for_update().first()
             if not job or payload.get('lease_id') != job.lease_id:
                 return jsonify(ok=False, error='Unknown or stale recording job'), 409
             if action == 'complete' and job.status in ('ready', 'partial'):
