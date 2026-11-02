@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import unittest
 
 import test_esp32 as fixture
-from database import Alert, AlertEvidence, EvidenceRecorder, Esp32Hub, SessionLocal
+from database import Alert, AlertEvidence, EvidenceRecorder, Esp32Hub, SessionLocal, Shop
 from evidence_api import enqueue_evidence, describe
 
 ENV = {'NETTRA_MEDIA_BUCKET':'private-fixture', 'NETTRA_MEDIA_ACCESS_KEY_ID':'fixture-key',
@@ -30,9 +30,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.json)
         self.recorder = {'X-NETTRA-RECORDER-SERIAL':'ESP32-TEST','X-NETTRA-RECORDER-TOKEN':r.json['token']}
 
-    def event(self, event_id='one', kind='intrusion'):
+    def event(self, event_id='one', kind='intrusion', state=None):
         timestamp=datetime.now(timezone.utc).isoformat()
-        r=self.sync(events=[{'id':event_id,'event_type':kind,'timestamp':timestamp}])
+        r=self.sync(state=state,events=[{'id':event_id,'event_type':kind,'timestamp':timestamp}])
         self.assertEqual(r.status_code,200,r.json)
         with SessionLocal() as db: return db.query(Alert).order_by(Alert.timestamp.desc()).first().id
 
@@ -136,6 +136,35 @@ class EvidenceTests(unittest.TestCase):
         with SessionLocal() as db:
             db.get(Esp32Hub,'ESP32-TEST').shop_id=None;db.commit()
         self.assertEqual(self.client.post('/evidence/recorder/poll',headers=self.recorder,json={}).status_code,401)
+
+    def test_reenrollment_cannot_claim_or_finish_previous_site_jobs(self):
+        self.event(); old_job=self.poll()[0]
+        with SessionLocal() as db:
+            owner=db.get(Shop,self.shop_id).user_id
+            db.add(Shop(id='replacement-site',shop_name='Replacement',user_id=owner));db.flush()
+            db.get(Esp32Hub,'ESP32-TEST').shop_id='replacement-site';db.commit()
+        r=self.client.put('/shop/replacement-site/evidence-recorder',headers=self.auth,json={'enabled':True,'camera_ids':[1]})
+        self.assertEqual(r.status_code,200,r.json)
+        self.recorder['X-NETTRA-RECORDER-TOKEN']=r.json['token']
+        self.assertEqual(self.poll(),[])
+        self.assertEqual(self.action(old_job,'prepare',manifest=self.manifest()).status_code,409)
+
+    def test_two_camera_incidents_keep_source_identity(self):
+        from test_esp32_cameras import multicamera_state
+        self.assertEqual(self.sync(multicamera_state(True)).status_code,200)
+        second=self.event(kind='intrusion-2',state=multicamera_state(True))
+        smoke=self.event('smoke-event','smoke',state=multicamera_state(True))
+        with SessionLocal() as db:
+            self.assertEqual([r.camera_id for r in db.query(AlertEvidence).filter_by(alert_id=second)],[2])
+            self.assertEqual(sorted(r.camera_id for r in db.query(AlertEvidence).filter_by(alert_id=smoke)),[1,2])
+
+    def test_advisory_enqueues_media_without_an_alarm_command(self):
+        r=self.client.post('/esp32/device/camera-advisory',headers=self.device,json={'event_id':'cover-test','camera_id':1})
+        self.assertEqual(r.status_code,200,r.json)
+        with SessionLocal() as db:
+            alert=db.query(Alert).one();self.assertEqual(alert.event_type,'camera-interference-1')
+            self.assertEqual(db.query(AlertEvidence).filter_by(alert_id=alert.id).count(),1)
+        self.assertIsNone(self.sync().json['command'])
 
 
 if __name__=='__main__':unittest.main()
