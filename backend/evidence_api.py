@@ -258,7 +258,7 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             db.commit()
             enabled = {1} | {c.get('camera_id') for c in (hub.reported_state or {}).get('cameras', []) if c.get('enabled')}
             response = jsonify(ok=True, server_time=timestamp.isoformat(), camera_ids=[c for c in recorder.camera_ids if c in enabled],
-                               camera_2=config, jobs=result)
+                               camera_2=config, camera_2_active_revision=(hub.reported_state or {}).get('camera_config_revision', 'factory'), jobs=result)
             response.headers['Cache-Control'] = 'no-store'
             return response
 
