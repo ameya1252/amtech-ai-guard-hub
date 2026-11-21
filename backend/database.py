@@ -415,3 +415,27 @@ def db_session():
         yield db
     finally:
         db.close()
+
+
+class Esp32ContactConfig(Base):
+    __tablename__ = 'esp32_contact_configs'
+    serial = Column(String(128), ForeignKey('esp32_hubs.serial'), primary_key=True)
+    revision = Column(String(32), nullable=False)
+    contacts = Column(JSON, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class TechnicianSiteAccess(Base):
+    __tablename__ = 'technician_site_access'
+    shop_id = Column(String(128), ForeignKey('shops.id'), primary_key=True)
+    user_id = Column(String(128), ForeignKey('users.id'), primary_key=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    granted_by = Column(String(255), nullable=False)
+
+
+class Esp32PrimaryCameraConfig(Base):
+    __tablename__ = 'esp32_primary_camera_configs'
+    serial = Column(String(128), ForeignKey('esp32_hubs.serial'), primary_key=True)
+    revision = Column(String(32), nullable=False)
+    encrypted_config = Column(String(8192), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

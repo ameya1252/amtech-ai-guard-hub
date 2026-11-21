@@ -15,7 +15,7 @@ import requests
 from flask import Flask, g, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from sqlalchemy.exc import IntegrityError
 
 from database import (
@@ -31,6 +31,7 @@ from database import (
     ShopEmergencyContact,
     SessionLocal,
     User,
+    TechnicianSiteAccess,
     init_db,
 )
 from sms_provider import normalize_india_phone, send_password_reset_otp
@@ -754,6 +755,9 @@ def owned_shop_or_response(db, shop_id):
         return None, (jsonify({"ok": False, "error": "shop not found", "shop_id": shop_id}), 404)
 
     if shop.user_id != g.user_id:
+        from technician_access import technician_access
+        permitted_read = request.method == 'GET' and request.path in (f'/shop/{shop_id}', f'/shop/{shop_id}/status')
+        if permitted_read and technician_access(db,shop_id,g.user_id): return shop,None
         return None, (jsonify({"ok": False, "error": "you do not have access to this shop", "shop_id": shop_id}), 403)
 
     return shop, None
@@ -1241,7 +1245,10 @@ def my_shops():
     try:
         shop_rows = (
             db.query(Shop)
-            .filter(Shop.user_id == g.user_id)
+            .filter(or_(Shop.user_id == g.user_id, Shop.id.in_(
+                db.query(TechnicianSiteAccess.shop_id).filter(
+                    TechnicianSiteAccess.user_id == g.user_id,
+                    TechnicianSiteAccess.expires_at > datetime.now(timezone.utc)))))
             .order_by(Shop.created_at.asc())
             .all()
         )
@@ -1569,3 +1576,10 @@ start_alarm_push_worker(lambda messages: send_expo_push_messages(messages))
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     app.run(host="0.0.0.0", port=port)
+
+# One worker owns the bounded status fan-out; do not scale workers without a shared broker.
+from status_stream import register_status_stream
+register_status_stream(app)
+
+from esp32_contacts_api import register_contact_routes
+register_contact_routes(app, auth_required, owned_shop_or_response)

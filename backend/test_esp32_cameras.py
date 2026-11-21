@@ -39,6 +39,11 @@ class MultiCameraTests(unittest.TestCase):
         os.environ['AMTECH_LABEL_ENCRYPTION_KEY'] = Fernet.generate_key().decode()
         fixture.Esp32Tests.setUp(self)
         self.sync(multicamera_state())
+        from database import TechnicianSiteAccess,Shop
+        with SessionLocal() as db:
+            db.add(TechnicianSiteAccess(shop_id=self.shop_id,user_id=db.get(Shop,self.shop_id).user_id,
+                   expires_at=datetime.now(timezone.utc)+timedelta(hours=1),granted_by='test-operator'))
+            db.commit()
         self.url = f'/shop/{self.shop_id}/esp32/camera-2'
         self.input = dict(enabled=True, host='192.168.0.5', port=443, username='admin',
                           password='private-camera-fixture-password', ca_pem=self.pem, expected_revision='factory')

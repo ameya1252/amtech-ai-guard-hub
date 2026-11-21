@@ -48,6 +48,24 @@ class EvidenceTests(unittest.TestCase):
         data=b'fixture';md5=base64.b64encode(hashlib.md5(data).digest()).decode()
         return dict(pre_seconds=5,post_seconds=10,objects={kind:dict(size=len(data),sha256=hashlib.sha256(data).hexdigest(),md5=md5) for kind in ('photo','thumbnail','video')})
 
+    def test_primary_reconfiguration_requires_a_compatible_recorder(self):
+        from database import Esp32PrimaryCameraConfig
+        from esp32_camera_api import seal
+        from cryptography.fernet import Fernet
+        from test_system_upgrade import upgraded_state
+        revision='a'*32
+        config=dict(camera_id=1,enabled=True,host='192.168.0.9',port=443,username='fixture',password='private-fixture-password',revision=revision)
+        with patch.dict(os.environ,{'AMTECH_LABEL_ENCRYPTION_KEY':Fernet.generate_key().decode()}):
+            with SessionLocal() as db:
+                db.add(Esp32PrimaryCameraConfig(serial='ESP32-TEST',revision=revision,encrypted_config=seal('ESP32-TEST',config)));db.commit()
+            state=dict(upgraded_state(),camera_1_config_revision=revision,camera_1_config_staged_revision=revision)
+            self.event(state=state)
+            legacy=self.client.post('/evidence/recorder/poll',headers=self.recorder,json={'cameras':[]}).json
+            self.assertNotIn(1,legacy['camera_ids']);self.assertEqual(legacy['jobs'],[])
+            current=self.client.post('/evidence/recorder/poll',headers=self.recorder,json={'cameras':[],'camera_config_protocol_version':2}).json
+            self.assertIn(1,current['camera_ids']);self.assertEqual(current['camera_1']['host'],'192.168.0.9')
+            self.assertNotIn('private-fixture-password',self.client.get(f'/shop/{self.shop_id}',headers=self.auth).text)
+
     def test_no_opt_in_no_jobs_and_no_storage_contact_in_sync(self):
         self.client.put(self.config,headers=self.auth,json={'enabled':False,'camera_ids':[1]})
         self.event()

@@ -1,18 +1,15 @@
-"""Owner-scoped Camera 2 setup. No camera connections or alarm commands on the server."""
+"""Technician-scoped setup of two camera slots, with legacy Camera 2 compatibility."""
 import ipaddress
 import json
 import re
 from datetime import datetime, timezone
 from uuid import uuid4
-
 from cryptography import x509
-from cryptography.fernet import InvalidToken
-from flask import jsonify, request
+from flask import g, jsonify, request
 from sqlalchemy.exc import IntegrityError
-
-from database import Esp32CameraConfig, Esp32Command, SessionLocal
-from operations_api import cipher
-
+from database import Esp32CameraConfig, Esp32PrimaryCameraConfig, Esp32Command, SessionLocal
+from operations_api import cipher, audit
+from technician_access import technician_access, readable_shop
 PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
 
 
@@ -20,34 +17,51 @@ def supports_cameras(state):
     return (state or {}).get('camera_protocol_version') == 1 and (state or {}).get('camera_capacity') == 2
 
 
+def model(camera_id):
+    return Esp32PrimaryCameraConfig if camera_id == 1 else Esp32CameraConfig
+
+
 def seal(serial, payload):
-    return cipher().encrypt(b'NETTRA-CAMERA2\0' + serial.encode() + b'\0' + json.dumps(payload).encode()).decode()
+    prefix = b'NETTRA-CAMERA1\0' if payload.get('camera_id') == 1 else b'NETTRA-CAMERA2\0'
+    return cipher().encrypt(prefix + serial.encode() + b'\0' + json.dumps(payload).encode()).decode()
 
 
 def unseal(row):
-    prefix = b'NETTRA-CAMERA2\0' + row.serial.encode() + b'\0'
+    camera_id = 1 if isinstance(row, Esp32PrimaryCameraConfig) else 2
+    prefix = (b'NETTRA-CAMERA1\0' if camera_id == 1 else b'NETTRA-CAMERA2\0') + row.serial.encode() + b'\0'
     data = cipher().decrypt(row.encrypted_config.encode())
-    if not data.startswith(prefix):
-        raise ValueError('Camera configuration identity mismatch')
-    return json.loads(data[len(prefix):])
+    if not data.startswith(prefix): raise ValueError('Camera configuration identity mismatch')
+    value = json.loads(data[len(prefix):])
+    if value.get('camera_id') != camera_id: raise ValueError('Camera slot mismatch')
+    return value
+
+
+def revisions(state, camera_id):
+    if camera_id == 1:
+        return state.get('camera_1_config_revision','factory'), state.get('camera_1_config_staged_revision','factory')
+    return state.get('camera_config_revision','factory'), state.get('camera_config_staged_revision','factory')
+
+
+def supported(state, camera_id):
+    return supports_cameras(state) and (camera_id == 2 or state.get('camera_config_protocol_version') == 2)
 
 
 def sync_camera_config(db, hub):
     state = hub.reported_state or {}
-    if not supports_cameras(state) or state.get('arm_state') != 'disarmed' or state.get('siren_active'):
-        return None
-    row = db.get(Esp32CameraConfig, hub.serial)
-    if row is None or state.get('camera_config_staged_revision') == row.revision:
-        return None
-    # Only a device-authenticated HTTPS sync receives the private credentials.
-    return unseal(row)
+    if state.get('arm_state') != 'disarmed' or state.get('siren_active'): return None
+    for camera_id in (1,2):
+        if not supported(state,camera_id): continue
+        row=db.get(model(camera_id),hub.serial)
+        if row and revisions(state,camera_id)[1] != row.revision: return unseal(row)
+    return None
 
 
-def validate_input(payload, previous):
+def validate_input(payload, previous, camera_id=2):
     if not isinstance(payload, dict) or type(payload.get('enabled')) is not bool:
         raise ValueError('Choose whether Camera 2 is enabled')
-    result = {'camera_id': 2, 'enabled': payload['enabled']}
+    result = {'camera_id': camera_id, 'enabled': payload['enabled']}
     if not result['enabled']:
+        if camera_id == 1: raise ValueError('Camera 1 must remain enabled')
         return result
     host, port = payload.get('host'), payload.get('port', 443)
     if not isinstance(host, str):
@@ -86,63 +100,61 @@ def validate_input(payload, previous):
 
 
 def register_camera_config_routes(app, auth_required, owned_shop_or_response):
-    @app.route('/shop/<shop_id>/esp32/camera-2', methods=['GET', 'PUT'])
+    @app.route('/shop/<shop_id>/esp32/camera-<int:camera_id>', methods=['GET','PUT'])
     @auth_required
-    def camera_config(shop_id):
+    def camera_config(shop_id, camera_id):
         from esp32_api import ACTIVE, hub_for_shop, online
+        if camera_id not in (1,2): return jsonify(ok=False,error='Invalid camera slot'),404
         with SessionLocal() as db:
-            shop, error = owned_shop_or_response(db, shop_id)
-            if error:
-                return error
-            hub = hub_for_shop(db, shop_id, lock=request.method == 'PUT')
-            if hub is None:
-                return jsonify(ok=False, error='This camera setup requires an ESP32 hub'), 409
-            state = hub.reported_state or {}
-            supported = supports_cameras(state)
-            row = db.get(Esp32CameraConfig, hub.serial)
+            shop=readable_shop(db,shop_id,g.user_id)
+            if not shop: return jsonify(ok=False,error='Site access required'),403
+            hub=hub_for_shop(db,shop_id,lock=True)
+            if not hub: return jsonify(ok=False,error='ESP32 hub required'),409
+            state=hub.reported_state or {}
+            row=db.get(model(camera_id),hub.serial)
+            previous=unseal(row) if row else None
+            permission=technician_access(db,shop_id,g.user_id)
+            compatible=supported(state,camera_id)
+            if request.method=='GET':
+                fallback=next((c for c in state.get('cameras',[]) if c['camera_id']==camera_id),{})
+                value=previous or dict(camera_id=camera_id,enabled=camera_id==1,host=fallback.get('host',''),port=fallback.get('port',443))
+                public={k:v for k,v in value.items() if k!='password'}
+                active,staged=revisions(state,camera_id)
+                public.update(password_saved=bool(value.get('password')),revision=row.revision if row else 'factory',
+                              supported=compatible,hub_online=online(hub),active_revision=active,staged_revision=staged,
+                              config_error=state.get('camera_config_error'),technician_access=permission,
+                              can_edit=permission and compatible and online(hub) and state.get('arm_state')=='disarmed' and not state.get('siren_active'))
+                return jsonify(ok=True,camera=public)
+            if not permission: return jsonify(ok=False,error='AMTECH technician access is required for camera changes'),403
+            if not compatible: return jsonify(ok=False,error='Update hub firmware before configuring this camera'),409
+            if not online(hub) or state.get('arm_state')!='disarmed' or state.get('siren_active'):
+                return jsonify(ok=False,error='The hub must be online, disarmed and idle before camera setup'),409
+            if db.query(Esp32Command).filter(Esp32Command.serial==hub.serial,Esp32Command.status.in_(ACTIVE)).first():
+                return jsonify(ok=False,error='Wait for the current hub command to finish'),409
+            if request.content_length and request.content_length>8192: return jsonify(ok=False,error='Camera configuration too large'),413
+            payload=request.get_json(silent=True)
+            if not isinstance(payload,dict) or payload.get('expected_revision')!=(row.revision if row else 'factory'):
+                return jsonify(ok=False,error='Camera settings changed; reload before saving'),409
             try:
-                previous = unseal(row) if row else None
-            except (InvalidToken, ValueError, KeyError):
-                return jsonify(ok=False, error='Camera configuration storage needs attention'), 503
-            if request.method == 'GET':
-                value = previous or {'camera_id': 2, 'enabled': False}
-                public = {k: v for k, v in value.items() if k != 'password'}
-                public.update(password_saved=bool(value.get('password')), revision=row.revision if row else 'factory',
-                              supported=supported, hub_online=online(hub),
-                              active_revision=state.get('camera_config_revision', 'factory'),
-                              staged_revision=state.get('camera_config_staged_revision', 'factory'),
-                              config_error=state.get('camera_config_error'),
-                              can_edit=supported and online(hub) and state.get('arm_state') == 'disarmed' and not state.get('siren_active'))
-                return jsonify(ok=True, camera=public)
-            if not supported:
-                return jsonify(ok=False, error='Update the hub firmware before configuring Camera 2'), 409
-            if not online(hub) or state.get('arm_state') != 'disarmed' or state.get('siren_active'):
-                return jsonify(ok=False, error='The hub must be online, disarmed and idle before camera setup'), 409
-            if db.query(Esp32Command).filter(Esp32Command.serial == hub.serial, Esp32Command.status.in_(ACTIVE)).first():
-                return jsonify(ok=False, error='Wait for the current hub command to finish'), 409
-            if request.content_length and request.content_length > 8192:
-                return jsonify(ok=False, error='Camera configuration is too large'), 413
-            payload = request.get_json(silent=True)
-            if not isinstance(payload, dict) or payload.get('expected_revision') != (row.revision if row else 'factory'):
-                return jsonify(ok=False, error='Camera settings changed; reload before saving'), 409
-            try:
-                config = validate_input(payload, previous)
-                primary = next((c for c in state.get('cameras', []) if c.get('camera_id') == 1), {})
-                if config['enabled'] and config['host'] == primary.get('host') and config['port'] == primary.get('port'):
-                    raise ValueError('Camera 2 must use a different address and port from Camera 1')
-                config['revision'] = uuid4().hex
-                encrypted = seal(hub.serial, config)
-            except ValueError as exc:
-                return jsonify(ok=False, error=str(exc)), 400
-            except KeyError:
-                return jsonify(ok=False, error='Camera configuration encryption needs attention'), 503
-            if row is None:
-                row = Esp32CameraConfig(serial=hub.serial)
-                db.add(row)
-            row.revision, row.encrypted_config = config['revision'], encrypted
-            row.updated_at = datetime.now(timezone.utc)
-            try:
-                db.commit()
-            except IntegrityError:
-                return jsonify(ok=False, error='Camera settings changed; reload before saving'), 409
-            return jsonify(ok=True, revision=config['revision'])
+                config=validate_input(payload,previous,camera_id)
+                other_id=3-camera_id
+                other=next((c for c in state.get('cameras',[]) if c['camera_id']==other_id),{})
+                other_row=db.get(model(other_id),hub.serial)
+                candidates=[other]+([unseal(other_row)] if other_row else [])
+                if config['enabled'] and any(c.get('enabled') and config['host']==c.get('host') and config['port']==c.get('port') for c in candidates):
+                    raise ValueError('Each camera must use a different address and port')
+                mac=payload.get('mac_address','')
+                if not isinstance(mac,str) or (mac and not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}',mac)):
+                    raise ValueError('Use a MAC address such as AA:BB:CC:DD:EE:FF, or leave it blank')
+                config.update(revision=uuid4().hex,mac_address=mac.upper())
+                encrypted=seal(hub.serial,config)
+            except ValueError as exc: return jsonify(ok=False,error=str(exc)),400
+            except KeyError: return jsonify(ok=False,error='Camera encryption requires service'),503
+            if row is None: row=model(camera_id)(serial=hub.serial);db.add(row)
+            row.revision,row.encrypted_config=config['revision'],encrypted
+            row.updated_at=datetime.now(timezone.utc)
+            audit(db,'camera.updated','Technician changed camera configuration',hub.serial,
+                  dict(camera_id=camera_id,revision=row.revision,technician_id=g.user_id))
+            try: db.commit()
+            except IntegrityError: return jsonify(ok=False,error='Camera settings changed; reload before saving'),409
+            return jsonify(ok=True,revision=config['revision'])

@@ -18,6 +18,7 @@ STATE = dict(arm_state="disarmed", force_armed=False, siren_active=False, siren_
 
 class Esp32Tests(unittest.TestCase):
     def setUp(self):
+        os.environ['DEVICE_CONFIG_SYNC_TOKEN']='legacy-test-token'
         limiter.reset()
         with engine.begin() as connection:
             for table in reversed(Base.metadata.sorted_tables):

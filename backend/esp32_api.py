@@ -14,6 +14,7 @@ from ota_api import validate_report, sync_ota
 from operations_api import claim_manufactured_hub, location_payload, package_for_hub, record_observation, factory_event_ids, record_factory_events
 
 ONLINE_SECONDS = 45
+FAST_ONLINE_SECONDS = 20
 COMMAND_SECONDS = 120
 ACTIVE = ("queued", "dispatched")
 CAPABILITIES = {
@@ -28,7 +29,8 @@ IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 def capabilities_for_state(state):
     from esp32_camera_api import supports_cameras
-    return {**CAPABILITIES, **({"camera_slots": 2, "camera_setup": True} if supports_cameras(state) else {})}
+    from esp32_contacts_api import supports_contacts
+    return {**CAPABILITIES, "editable_contacts": supports_contacts(state), **({"camera_slots": 2, "camera_setup": True} if supports_cameras(state) else {})}
 
 
 def secret_hash(value):
@@ -39,8 +41,12 @@ def utc(value):
     return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
 
 
+def heartbeat_timeout(hub):
+    return FAST_ONLINE_SECONDS if (hub.reported_state or {}).get('status_protocol_version') == 2 else ONLINE_SECONDS
+
+
 def online(hub):
-    return bool(hub.last_seen_at and (datetime.now(timezone.utc) - utc(hub.last_seen_at)).total_seconds() < ONLINE_SECONDS)
+    return bool(hub.last_seen_at and (datetime.now(timezone.utc) - utc(hub.last_seen_at)).total_seconds() < heartbeat_timeout(hub))
 
 
 def hub_for_shop(db, shop_id, lock=False):
@@ -72,13 +78,16 @@ def status_dict(db, shop, hub):
     latest = db.query(Esp32Command).filter(Esp32Command.serial == hub.serial).order_by(Esp32Command.created_at.desc()).first()
     pending = latest if latest and latest.status in ACTIVE else None
     state = hub.reported_state or {}
+    capabilities = capabilities_for_state(state)
+    if getattr(g, 'user_id', shop.user_id) != shop.user_id:
+        capabilities = {**capabilities, **{key: False for key in ('arm','force_arm','disarm','stop','editable_contacts','media')}}
     return {
-        "ok": True, "shop_id": shop.id, "device_type": "esp32", "capabilities": capabilities_for_state(state),
+        "ok": True, "shop_id": shop.id, "device_type": "esp32", "capabilities": capabilities,
         "armed": state.get("arm_state") == "armed", "arm_state": state.get("arm_state", "unknown"),
-        "hub_online": online(hub), "last_seen_at": utc(hub.last_seen_at).isoformat() if hub.last_seen_at else None,
+        "heartbeat_timeout_seconds":heartbeat_timeout(hub), "status_revision":state.get("_status_revision",0), "hub_online": online(hub), "last_seen_at": utc(hub.last_seen_at).isoformat() if hub.last_seen_at else None,
         "battery_level": None, "pending_command": pending.name if pending else None,
         "pending_command_id": pending.id if pending else None,
-        "last_command": command_dict(latest), **{k: v for k, v in state.items() if k != "arm_state"},
+        "last_command": command_dict(latest), **{k: v for k, v in state.items() if k not in ("arm_state","_status_revision")},
     }
 
 
@@ -95,7 +104,12 @@ def esp32_status(shop):
 def esp32_metadata(shop_id):
     with SessionLocal() as db:
         hub = hub_for_shop(db, shop_id)
-        return {"device_type": "esp32", "capabilities": capabilities_for_state(hub.reported_state)} if hub else {"device_type": "rv1106"}
+        if not hub: return {"device_type":"rv1106"}
+        capabilities=capabilities_for_state(hub.reported_state)
+        shop=db.get(Shop,shop_id)
+        if shop and getattr(g,'user_id',shop.user_id)!=shop.user_id:
+            capabilities={**capabilities,**{key:False for key in ('arm','force_arm','disarm','stop','editable_contacts','media')}}
+        return {"device_type":"esp32","capabilities":capabilities}
 
 
 def queue_command(shop_id, name):
@@ -118,8 +132,12 @@ def queue_command(shop_id, name):
         db.add(Esp32Command(id=str(uuid4()), serial=hub.serial, name=name, status="queued",
                             created_at=now, expires_at=now + timedelta(seconds=COMMAND_SECONDS)))
         db.flush()
-        result = status_dict(db, db.get(Shop, shop_id), hub)
+        hub.reported_state={**(hub.reported_state or {}),"_status_revision":(hub.reported_state or {}).get("_status_revision",0)+1}
+        shop=db.get(Shop,shop_id)
+        result = status_dict(db, shop, hub)
         db.commit()
+        from status_stream import publish_status
+        publish_status(shop_id, result, shop.user_id)
         return jsonify(result)
 
 
@@ -127,6 +145,7 @@ def validate_state(state):
     if not isinstance(state, dict) or state.get("arm_state") not in ("disarmed", "arming", "armed"):
         raise ValueError("A valid reported arm_state is required")
     result = {"arm_state": state["arm_state"]}
+    if state.get("status_protocol_version") == 2: result["status_protocol_version"]=2
     for key in ("force_armed", "siren_active", "camera_online", "camera_protection_active"):
         if type(state.get(key)) is not bool:
             raise ValueError(f"{key} must be boolean")
@@ -143,6 +162,19 @@ def validate_state(state):
     if reason is not None and (not isinstance(reason, str) or len(reason) > 512):
         raise ValueError("Invalid arm block reason")
     result["arm_block_reason"] = reason
+    if state.get('contact_protocol_version') == 1:
+        from esp32_contacts_api import validate_contacts
+        contacts = state.get('alert_contacts')
+        normalized = validate_contacts(contacts)
+        rev = state.get('contact_config_revision')
+        if not isinstance(rev, str) or not (rev == 'factory' or re.fullmatch('[0-9a-f]{32}', rev)):
+            raise ValueError('Invalid contact revision')
+        result.update(contact_protocol_version=1, contact_config_revision=rev,
+                      alert_contacts=[dict(slot=c['slot'], phone=c['phone']) for c in normalized])
+        error = state.get('contact_config_error')
+        if error is not None and (not isinstance(error, str) or len(error) > 256):
+            raise ValueError('Invalid contact configuration error')
+        if error: result['contact_config_error'] = error
     for key in ('firmware_version', 'boot_id', 'hardware_id', 'reset_reason'):
         value = state.get(key)
         if value is not None:
@@ -187,6 +219,9 @@ def validate_state(state):
                 if type(camera.get('port')) is not int or not 1 <= camera['port'] <= 65535:
                     raise ValueError('Invalid camera port')
                 item['port'] = camera['port']
+            if 'interference_advisory' in camera:
+                if type(camera['interference_advisory']) is not bool: raise ValueError('Invalid camera advisory')
+                item['interference_advisory'] = camera['interference_advisory']
             normalized.append(item)
         normalized.sort(key=lambda item: item['camera_id'])
         if [c['camera_id'] for c in normalized] != [1, 2] or not normalized[0]['enabled']:
@@ -202,7 +237,15 @@ def validate_state(state):
             if not isinstance(value, str) or len(value) > 256:
                 raise ValueError('Invalid camera configuration error')
             result['camera_config_error'] = value
+    if state.get('camera_config_protocol_version') == 2:
+        if not supports_camera_v2_state(state): raise ValueError('Invalid Camera 1 configuration revision')
+        result.update({key: state[key] for key in ('camera_config_protocol_version','camera_1_config_revision','camera_1_config_staged_revision')})
     return result
+
+
+def supports_camera_v2_state(state):
+    return all(isinstance(state.get(key),str) and (state[key]=='factory' or re.fullmatch('[0-9a-f]{32}',state[key]))
+               for key in ('camera_1_config_revision','camera_1_config_staged_revision'))
 
 
 def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes):
@@ -303,6 +346,7 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                 return jsonify({"ok": False, "error": "Invalid device credentials"}), 401
             hub.last_seen_at = datetime.now(timezone.utc)
             previous = hub.reported_state
+            state["_status_revision"]=(previous or {}).get("_status_revision",0)+1
             hub.reported_state = state
             record_observation(db, hub, previous)
             ack_received = None
@@ -370,6 +414,9 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                 return jsonify(ok=False, error=str(exc)), 400
             if ota_report is not None:
                 result['ota'] = offer
+            from esp32_contacts_api import sync_contacts
+            contacts = sync_contacts(db, hub)
+            if contacts is not None: result["contact_config"] = contacts
             from esp32_camera_api import sync_camera_config
             from cryptography.fernet import InvalidToken
             try:
@@ -379,7 +426,12 @@ def register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm
                 app.logger.error('Camera configuration cannot be decrypted for device sync')
             if camera_config is not None:
                 result['camera_config'] = camera_config
+            from status_stream import has_subscribers
+            stream_status = status_dict(db, shop, hub) if hub.shop_id and has_subscribers(hub.shop_id) else None
             db.commit()
+        if stream_status:
+            from status_stream import publish_status
+            publish_status(stream_status["shop_id"], stream_status, shop.user_id)
         if new_alerts:
             wake_alarm_pushes()
         return jsonify(result)

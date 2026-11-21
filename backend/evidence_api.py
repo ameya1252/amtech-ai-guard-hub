@@ -243,22 +243,28 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
                                    lease_id=job.lease_id, lease_until=utc(job.lease_until).isoformat(),
                                    pre_seconds=5, post_seconds=10))
             hub = db.get(Esp32Hub, recorder.serial)
-            config = None
-            if 2 in recorder.camera_ids:
-                from database import Esp32CameraConfig
-                from esp32_camera_api import unseal
-                current = db.get(Esp32CameraConfig, recorder.serial)
-                if current and current.revision == (hub.reported_state or {}).get('camera_config_revision'):
-                    from cryptography.fernet import InvalidToken
-                    try:
-                        config = unseal(current)
-                    except (InvalidToken, KeyError, ValueError):
-                        # Broken Camera 2 configuration must not stop Camera 1 jobs.
-                        app.logger.error('Recorder cannot decrypt active Camera 2 configuration')
+            from esp32_camera_api import unseal,revisions,model
+            from cryptography.fernet import InvalidToken
+            camera_configs={1:None,2:None}
+            for camera_id in recorder.camera_ids:
+                current=db.get(model(camera_id),recorder.serial)
+                if current and current.revision==revisions(hub.reported_state or {},camera_id)[0]:
+                    try: camera_configs[camera_id]=unseal(current)
+                    except (InvalidToken,KeyError,ValueError):
+                        app.logger.error('Recorder cannot decrypt active camera configuration')
+            primary_revision=revisions(hub.reported_state or {},1)[0]
+            legacy_primary=primary_revision!='factory' and payload.get('camera_config_protocol_version')!=2
+            if legacy_primary:
+                # An older recorder must never label its fixed original feed as the new Camera 1.
+                for job in jobs:
+                    if job.camera_id==1: job.status,job.reason='unavailable','camera_offline'
+                result=[job for job in result if job['camera_id']!=1]
             db.commit()
             enabled = {1} | {c.get('camera_id') for c in (hub.reported_state or {}).get('cameras', []) if c.get('enabled')}
+            if legacy_primary: enabled.discard(1)
             response = jsonify(ok=True, server_time=timestamp.isoformat(), camera_ids=[c for c in recorder.camera_ids if c in enabled],
-                               camera_2=config, camera_2_active_revision=(hub.reported_state or {}).get('camera_config_revision', 'factory'), jobs=result)
+                               camera_1=camera_configs[1],camera_1_active_revision=primary_revision,
+                               camera_2=camera_configs[2], camera_2_active_revision=(hub.reported_state or {}).get('camera_config_revision', 'factory'), jobs=result)
             response.headers['Cache-Control'] = 'no-store'
             return response
 

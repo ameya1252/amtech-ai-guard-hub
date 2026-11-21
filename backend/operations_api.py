@@ -100,7 +100,7 @@ def claim_manufactured_hub(db, hub, location):
 
 def record_observation(db, hub, previous):
     state = hub.reported_state or {}
-    dynamic = {'uptime_ms', 'free_heap_bytes'}
+    dynamic = {'uptime_ms', 'free_heap_bytes', '_status_revision'}
     current = {k: v for k, v in state.items() if k not in dynamic}
     old = {k: v for k, v in (previous or {}).items() if k not in dynamic}
     if current != old:
