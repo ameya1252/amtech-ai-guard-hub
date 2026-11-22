@@ -11,7 +11,7 @@ from threading import BoundedSemaphore
 from flask import jsonify, request
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from database import Alert, Esp32EventReceipt, Esp32Hub, HubAlarmPhoto, SessionLocal
+from database import Alert, AlertEvidence, EvidenceRecorder, Esp32EventReceipt, Esp32Hub, HubAlarmPhoto, SessionLocal
 
 MAX_PHOTO_BYTES = 1024 * 1024
 MAX_PIXELS = 12_000_000
@@ -271,5 +271,10 @@ def register_alarm_photo_routes(app):
             db.add(Esp32EventReceipt(id=receipt_id, alert_id=alert.id))
             db.add(HubAlarmPhoto(id=uuid4().hex, alert_id=alert.id, serial=serial, camera_id=payload['camera_id'],
                                 event_at=event_at, expires_at=event_at+RETENTION, status='pending'))
+            recorder = db.get(EvidenceRecorder, serial)
+            if (recorder and recorder.enabled and recorder.shop_id == hub.shop_id
+                    and payload['camera_id'] in recorder.camera_ids):
+                db.add(AlertEvidence(id=uuid4().hex, alert_id=alert.id, serial=serial, camera_id=payload['camera_id'],
+                                     event_at=event_at, expires_at=event_at+RETENTION, status='pending'))
             db.commit()
             return jsonify(ok=True)

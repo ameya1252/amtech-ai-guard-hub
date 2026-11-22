@@ -116,6 +116,39 @@ class EvidenceTests(unittest.TestCase):
         m['post_seconds']=9
         self.assertEqual(self.action(job,'prepare',manifest=m).status_code,409)
 
+    def test_photo_timing_is_finite_within_actual_coverage_and_immutable(self):
+        self.event(); job=self.poll()[0]
+        for offset in (True, float('nan'), float('inf'), -6, 11, '-2'):
+            self.assertEqual(self.action(job,'prepare',manifest={**self.manifest(),'photo_offset_seconds':offset}).status_code,400)
+        manifest={**self.manifest(),'photo_offset_seconds':-2.001}
+        self.assertEqual(self.action(job,'prepare',manifest=manifest).status_code,200)
+        self.assertEqual(self.action(job,'prepare',manifest=manifest).status_code,200)
+        self.assertEqual(self.action(job,'prepare',manifest={**manifest,'photo_offset_seconds':-1}).status_code,409)
+        with SessionLocal() as db:
+            row=db.get(AlertEvidence,job['id']); row.status='ready'; db.commit()
+            card=describe(row)
+            self.assertEqual(card['capture_mode'],'recorded_frame')
+            self.assertEqual(card['photo_offset_seconds'],-2.001)
+
+    def test_cloud_ingest_poll_does_not_export_camera_admin_credentials(self):
+        from database import Esp32PrimaryCameraConfig
+        from esp32_camera_api import seal
+        from cryptography.fernet import Fernet
+        from test_system_upgrade import upgraded_state
+        revision='a'*32
+        config=dict(camera_id=1,enabled=True,host='192.168.0.9',port=443,username='fixture',password='private-camera-admin',revision=revision)
+        with patch.dict(os.environ,{'AMTECH_LABEL_ENCRYPTION_KEY':Fernet.generate_key().decode()}):
+            with SessionLocal() as db:
+                db.add(Esp32PrimaryCameraConfig(serial='ESP32-TEST',revision=revision,encrypted_config=seal('ESP32-TEST',config)));db.commit()
+            self.event(state=dict(upgraded_state(),camera_1_config_revision=revision,camera_1_config_staged_revision=revision))
+            result=self.client.post('/evidence/recorder/poll',headers=self.recorder,
+                json={'cameras':[],'camera_config_protocol_version':2,'cloud_ingest_protocol_version':1})
+            self.assertEqual(result.status_code,200)
+            self.assertIn(1,result.json['camera_ids'])
+            self.assertEqual(result.json['camera_1_active_revision'],revision)
+            self.assertIsNone(result.json['camera_1'])
+            self.assertNotIn('private-camera-admin',result.text)
+
     def test_completion_checks_storage_and_is_idempotent(self):
         alert=self.event();job=self.poll()[0];m=self.manifest()
         self.assertEqual(self.action(job,'prepare',manifest=m).status_code,200)

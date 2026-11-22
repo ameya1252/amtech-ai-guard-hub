@@ -6,6 +6,7 @@ this server, and signed reads are issued only after checking site ownership.
 import base64
 import hashlib
 import hmac
+import math
 import os
 import re
 import secrets
@@ -81,6 +82,10 @@ def describe(row, urls=False):
                   reason='retry_exhausted' if overdue else row.reason,
                   pre_seconds=(row.manifest or {}).get('pre_seconds'), post_seconds=(row.manifest or {}).get('post_seconds'))
     result['has_thumbnail'] = status in ('ready', 'partial') and 'thumbnail' in (row.manifest or {}).get('objects', {})
+    offset = (row.manifest or {}).get('photo_offset_seconds')
+    if type(offset) in (int, float) and math.isfinite(offset):
+        result.update(photo_offset_seconds=offset, capture_mode='recorded_frame',
+                      captured_at=(utc(row.event_at)+timedelta(seconds=offset)).isoformat())
     if not urls or status not in ('ready', 'partial') or not storage_ready():
         return result
     # Round signing time indirectly by only fetching these URLs on detail/thumbnail reads;
@@ -117,8 +122,15 @@ def validate_manifest(data):
             raise ValueError('Invalid media checksum') from None
         if len(md5) != 16:
             raise ValueError('Invalid media checksum')
-    return {'pre_seconds': pre, 'post_seconds': post,
-            'objects': {k: {f: v[f] for f in ('size', 'sha256', 'md5')} for k, v in objects.items()}}
+    result = {'pre_seconds': pre, 'post_seconds': post,
+              'objects': {k: {f: v[f] for f in ('size', 'sha256', 'md5')} for k, v in objects.items()}}
+    if 'photo_offset_seconds' in data:
+        offset = data['photo_offset_seconds']
+        if (type(offset) not in (int, float) or not math.isfinite(offset) or 'photo' not in objects
+                or not -pre-0.01 <= offset <= post+0.01):
+            raise ValueError('Photo timestamp must be inside the actual recorded window')
+        result['photo_offset_seconds'] = round(offset, 3)
+    return result
 
 
 def describe_alerts(db, alert_ids, urls=False):
@@ -126,18 +138,38 @@ def describe_alerts(db, alert_ids, urls=False):
     if not alert_ids:
         return {}
     by_alert = {}
-    for row in db.query(AlertEvidence).filter(AlertEvidence.alert_id.in_(alert_ids)).all():
-        by_alert.setdefault(row.alert_id, {})[row.camera_id] = describe(row, urls)
+    rows = db.query(AlertEvidence).filter(AlertEvidence.alert_id.in_(alert_ids)).all()
+    recorders = {r.serial:r for r in db.query(EvidenceRecorder).filter(
+        EvidenceRecorder.serial.in_({r.serial for r in rows})).all()} if rows else {}
+    for row in rows:
+        item = describe(row, urls)
+        recorder = recorders.get(row.serial)
+        healthy = (recorder and recorder.enabled and recorder.last_seen_at
+                   and utc(recorder.last_seen_at) > now()-timedelta(seconds=20)
+                   and any(c.get('camera_id') == row.camera_id and c.get('online') for c in (recorder.cameras or [])))
+        processing = (row.status == 'capturing' and row.lease_until
+                      and utc(row.lease_until) > now() and recorder and recorder.enabled)
+        item['video_status'] = item['status']
+        if item['status'] in ('pending', 'capturing') and not healthy and not processing:
+            item['video_status'] = 'unavailable'
+            item['video_reason'] = 'recorder_offline'
+        by_alert.setdefault(row.alert_id, {})[row.camera_id] = item
     from alarm_photo_api import describe_photo
     for row in db.query(HubAlarmPhoto).filter(HubAlarmPhoto.alert_id.in_(alert_ids)).all():
         cards = by_alert.setdefault(row.alert_id, {})
         photo = describe_photo(row, urls)
         previous = cards.get(row.camera_id)
+        if (previous and previous['status'] in ('ready', 'partial')
+                and type(previous.get('photo_offset_seconds')) in (int, float)
+                and -2.25 <= previous['photo_offset_seconds'] <= -1.75):
+            # Once verified buffered evidence is ready, prefer its pre-alarm photo.
+            continue
         if previous and previous['status'] in ('ready', 'partial') and photo['status'] != 'ready':
             continue
         if photo['status'] == 'ready':
             if previous:
-                photo['video_status'] = previous['status']
+                photo['video_status'] = previous.get('video_status', previous['status'])
+                if previous.get('video_reason'): photo['video_reason'] = previous['video_reason']
                 if previous.get('video'):
                     photo['video'] = previous['video']
                     photo['pre_seconds'], photo['post_seconds'] = previous['pre_seconds'], previous['post_seconds']
@@ -294,8 +326,8 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             enabled = {1} | {c.get('camera_id') for c in (hub.reported_state or {}).get('cameras', []) if c.get('enabled')}
             if legacy_primary: enabled.discard(1)
             response = jsonify(ok=True, server_time=timestamp.isoformat(), camera_ids=[c for c in recorder.camera_ids if c in enabled],
-                               camera_1=camera_configs[1],camera_1_active_revision=primary_revision,
-                               camera_2=camera_configs[2], camera_2_active_revision=(hub.reported_state or {}).get('camera_config_revision', 'factory'), jobs=result)
+                               camera_1=None if payload.get('cloud_ingest_protocol_version') == 1 else camera_configs[1],camera_1_active_revision=primary_revision,
+                               camera_2=None if payload.get('cloud_ingest_protocol_version') == 1 else camera_configs[2], camera_2_active_revision=(hub.reported_state or {}).get('camera_config_revision', 'factory'), jobs=result)
             response.headers['Cache-Control'] = 'no-store'
             return response
 

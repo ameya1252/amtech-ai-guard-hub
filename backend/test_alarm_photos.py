@@ -194,6 +194,43 @@ class AlarmPhotoTests(unittest.TestCase):
         self.assertEqual(len(items), 1); self.assertIn('photo', items[0]); self.assertIn('video', items[0])
         self.assertEqual(items[0]['pre_seconds'], 5)
 
+    def test_buffered_pre_alarm_photo_replaces_snapshot_only_after_ready(self):
+        self.event();self.upload()
+        with SessionLocal() as db:
+            photo=db.query(HubAlarmPhoto).one()
+            row=AlertEvidence(id='buffered-pre-frame',alert_id=self.alert_id,serial='ESP32-TEST',camera_id=1,
+                status='capturing',event_at=photo.event_at,expires_at=photo.expires_at)
+            db.add(row);db.commit()
+        pending=self.evidence().json['evidence'][0]
+        self.assertEqual(pending['capture_mode'],'snapshot')
+        self.assertEqual(pending['video_status'],'unavailable')
+        with SessionLocal() as db:
+            row=db.get(AlertEvidence,'buffered-pre-frame');row.status='ready'
+            row.manifest={'pre_seconds':5,'post_seconds':10,'photo_offset_seconds':-2,
+                'objects':{'photo':{'key':'pre-photo','size':100},'video':{'key':'incident-video','size':1000}}}
+            db.commit()
+        cards=self.evidence().json['evidence'];self.assertEqual(len(cards),1)
+        self.assertEqual(cards[0]['capture_mode'],'recorded_frame')
+        self.assertEqual(cards[0]['photo_offset_seconds'],-2)
+        self.assertIn('video',cards[0]);self.assertIn('photo',cards[0])
+
+    def test_silent_photo_test_also_checks_enrolled_video_without_alarm_push(self):
+        self.sync({**fixture.STATE,'snapshot_protocol_version':1})
+        enrolled=self.client.put(f'/shop/{self.shop_id}/evidence-recorder',headers=self.auth,
+            json={'enabled':True,'camera_ids':[1]})
+        self.assertEqual(enrolled.status_code,200)
+        with patch('esp32_api.enqueue_alarm_pushes') as push:
+            for _ in range(2):
+                response=self.client.post('/esp32/device/photo-test',headers=self.device,
+                    json={'event_id':'silent-buffer-test','camera_id':1,'event_at':self.capture_time})
+                self.assertEqual(response.status_code,200,response.json)
+            push.assert_not_called()
+        with SessionLocal() as db:
+            self.assertEqual(db.query(AlertEvidence).count(),1)
+            self.assertEqual(db.query(HubAlarmPhoto).count(),1)
+            self.assertEqual(db.query(Alert).one().event_type,'test')
+        self.assertIsNone(self.sync().json['command'])
+
     def test_reassignment_cannot_upload_old_site_photo(self):
         self.event()
         with SessionLocal() as db:
