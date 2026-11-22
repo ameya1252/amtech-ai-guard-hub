@@ -333,7 +333,7 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             db.commit()
             enabled = {1} | {c.get('camera_id') for c in (hub.reported_state or {}).get('cameras', []) if c.get('enabled')}
             if legacy_primary: enabled.discard(1)
-            response = jsonify(ok=True, server_time=timestamp.isoformat(), camera_ids=[c for c in recorder.camera_ids if c in enabled],
+            response = jsonify(ok=True, server_time=timestamp.isoformat(), shop_id=recorder.shop_id, camera_ids=[c for c in recorder.camera_ids if c in enabled],
                                camera_1=None if payload.get('cloud_ingest_protocol_version') == 1 else camera_configs[1],camera_1_active_revision=primary_revision,
                                camera_2=None if payload.get('cloud_ingest_protocol_version') == 1 else camera_configs[2], camera_2_active_revision=(hub.reported_state or {}).get('camera_config_revision', 'factory'), jobs=result)
             response.headers['Cache-Control'] = 'no-store'

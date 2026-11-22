@@ -1559,6 +1559,8 @@ from esp32_camera_api import register_camera_config_routes
 register_camera_config_routes(app, auth_required, owned_shop_or_response)
 from evidence_api import register_evidence_routes
 register_evidence_routes(app, auth_required, owned_shop_or_response)
+from live_api import register_live_routes
+register_live_routes(app, auth_required, owned_shop_or_response)
 register_esp32_routes(app, auth_required, owned_shop_or_response, wake_alarm_pushes)
 register_camera_advisory_routes(app, lambda messages: send_expo_push_messages(messages))
 register_operations_routes(app, auth_required, owned_shop_or_response, lambda: r2_client())
