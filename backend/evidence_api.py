@@ -17,7 +17,7 @@ from botocore.config import Config
 from flask import jsonify, request
 from sqlalchemy import or_
 
-from database import Alert, AlertEvidence, EvidenceRecorder, Esp32Hub, SessionLocal
+from database import Alert, AlertEvidence, EvidenceRecorder, Esp32Hub, HubAlarmPhoto, SessionLocal
 
 RETENTION = timedelta(days=30)
 LEASE = timedelta(minutes=10)
@@ -49,11 +49,14 @@ def storage():
     return boto3.client('s3', endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
                         aws_access_key_id=os.environ['NETTRA_MEDIA_ACCESS_KEY_ID'],
                         aws_secret_access_key=os.environ['NETTRA_MEDIA_SECRET_ACCESS_KEY'], region_name='auto',
-                        config=Config(signature_version='s3v4', request_checksum_calculation='when_required',
+                        config=Config(signature_version='s3v4', connect_timeout=3, read_timeout=5,
+                                      retries={'max_attempts': 1, 'mode': 'standard'}, request_checksum_calculation='when_required',
                                       response_checksum_validation='when_required'))
 
 
 def enqueue_evidence(db, hub, alert):
+    from alarm_photo_api import enqueue_alarm_photos
+    enqueue_alarm_photos(db, hub, alert)
     recorder = db.get(EvidenceRecorder, hub.serial)
     if not recorder or not recorder.enabled or recorder.shop_id != hub.shop_id:
         return
@@ -77,6 +80,7 @@ def describe(row, urls=False):
     result = dict(id=row.id, camera_id=row.camera_id, status=status, expires_at=utc(row.expires_at).isoformat(),
                   reason='retry_exhausted' if overdue else row.reason,
                   pre_seconds=(row.manifest or {}).get('pre_seconds'), post_seconds=(row.manifest or {}).get('post_seconds'))
+    result['has_thumbnail'] = status in ('ready', 'partial') and 'thumbnail' in (row.manifest or {}).get('objects', {})
     if not urls or status not in ('ready', 'partial') or not storage_ready():
         return result
     # Round signing time indirectly by only fetching these URLs on detail/thumbnail reads;
@@ -117,7 +121,36 @@ def validate_manifest(data):
             'objects': {k: {f: v[f] for f in ('size', 'sha256', 'md5')} for k, v in objects.items()}}
 
 
+def describe_alerts(db, alert_ids, urls=False):
+    """One card per camera, with a usable hub photo even if the recorder is absent."""
+    if not alert_ids:
+        return {}
+    by_alert = {}
+    for row in db.query(AlertEvidence).filter(AlertEvidence.alert_id.in_(alert_ids)).all():
+        by_alert.setdefault(row.alert_id, {})[row.camera_id] = describe(row, urls)
+    from alarm_photo_api import describe_photo
+    for row in db.query(HubAlarmPhoto).filter(HubAlarmPhoto.alert_id.in_(alert_ids)).all():
+        cards = by_alert.setdefault(row.alert_id, {})
+        photo = describe_photo(row, urls)
+        previous = cards.get(row.camera_id)
+        if previous and previous['status'] in ('ready', 'partial') and photo['status'] != 'ready':
+            continue
+        if photo['status'] == 'ready':
+            if previous:
+                photo['video_status'] = previous['status']
+                if previous.get('video'):
+                    photo['video'] = previous['video']
+                    photo['pre_seconds'], photo['post_seconds'] = previous['pre_seconds'], previous['post_seconds']
+                    photo['status'] = previous['status']
+            cards[row.camera_id] = photo
+        elif not previous or previous['status'] not in ('ready', 'partial'):
+            cards[row.camera_id] = photo
+    return {key: [cards[camera] for camera in sorted(cards)] for key, cards in by_alert.items()}
+
+
 def register_evidence_routes(app, auth_required, owned_shop_or_response):
+    from alarm_photo_api import register_alarm_photo_routes
+    register_alarm_photo_routes(app)
     @app.route('/shop/<shop_id>/evidence-recorder', methods=['GET', 'PUT'])
     @auth_required
     def recorder_settings(shop_id):
@@ -167,8 +200,7 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             alert = db.get(Alert, alert_id)
             if not alert or alert.shop_id != shop.id:
                 return jsonify(ok=False, error='Alert not found'), 404
-            rows = db.query(AlertEvidence).filter_by(alert_id=alert.id).order_by(AlertEvidence.camera_id).all()
-            response = jsonify(ok=True, evidence=[describe(row, urls=True) for row in rows])
+            response = jsonify(ok=True, evidence=describe_alerts(db, [alert.id], urls=True).get(alert.id, []))
             response.headers['Cache-Control'] = 'private, no-store'
             return response
 
@@ -184,10 +216,9 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             alert = db.get(Alert, alert_id)
             if not alert or alert.shop_id != shop.id:
                 return jsonify(ok=False, error='Alert not found'), 404
-            rows = db.query(AlertEvidence).filter_by(alert_id=alert.id).order_by(AlertEvidence.camera_id).all()
-            for row in rows:
-                if row.status in ('ready', 'partial') and utc(row.expires_at) > now() and 'thumbnail' in (row.manifest or {}).get('objects', {}) and storage_ready():
-                    url = describe(row, urls=True)['thumbnail']['url']
+            for item in describe_alerts(db, [alert.id], urls=True).get(alert.id, []):
+                if item.get('thumbnail'):
+                    url = item['thumbnail']['url']
                     response = redirect(url, code=302)
                     response.headers['Cache-Control'] = 'private, no-store'
                     return response

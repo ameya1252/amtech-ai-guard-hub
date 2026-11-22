@@ -1535,21 +1535,13 @@ def alerts(shop_id):
             .order_by(Alert.timestamp.desc())
             .all()
         )
-        from database import AlertEvidence
-        from evidence_api import describe
-        evidence = db.query(AlertEvidence).join(Alert, Alert.id == AlertEvidence.alert_id).filter(Alert.shop_id == shop_id).all()
-        by_alert = {}
-        thumbnails = set()
-        for item in evidence:
-            by_alert.setdefault(item.alert_id, []).append(describe(item))
-            if (item.status in ('ready', 'partial') and item.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
-                    and 'thumbnail' in (item.manifest or {}).get('objects', {})):
-                thumbnails.add(item.alert_id)
+        from evidence_api import describe_alerts
+        by_alert = describe_alerts(db, [row.id for row in alert_rows])
         result = []
         for row in alert_rows:
             value = alert_to_dict(row)
             value['evidence'] = by_alert.get(row.id, [])
-            value['has_thumbnail'] = row.id in thumbnails
+            value['has_thumbnail'] = any(item.get('has_thumbnail') for item in value['evidence'])
             result.append(value)
         response = jsonify({"ok": True, "shop_id": shop_id, "alerts": result})
         response.headers['Cache-Control'] = 'private, no-store'

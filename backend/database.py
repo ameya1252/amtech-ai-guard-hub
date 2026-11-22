@@ -248,6 +248,24 @@ class EvidenceRecorder(Base):
     cameras = Column(JSON, nullable=True)
 
 
+class HubAlarmPhoto(Base):
+    """Independent of recorder leases, so an absent video recorder cannot block photos."""
+    __tablename__ = 'hub_alarm_photos'
+    __table_args__ = (UniqueConstraint('alert_id', 'camera_id', name='uq_hub_photo_alert_camera'),)
+
+    id = Column(String(128), primary_key=True)
+    alert_id = Column(String(128), ForeignKey('alerts.id'), nullable=False, index=True)
+    serial = Column(String(128), ForeignKey('esp32_hubs.serial'), nullable=False, index=True)
+    camera_id = Column(Integer, nullable=False)
+    event_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    captured_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(24), nullable=False, default='pending')
+    reason = Column(String(64), nullable=True)
+    source_sha256 = Column(String(64), nullable=True)
+    manifest = Column(JSON, nullable=True)
+
+
 class AlertEvidence(Base):
     __tablename__ = "alert_evidence"
     __table_args__ = (UniqueConstraint("alert_id", "camera_id", name="uq_alert_evidence_camera"),)

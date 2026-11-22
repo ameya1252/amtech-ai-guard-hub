@@ -30,7 +30,9 @@ IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 def capabilities_for_state(state):
     from esp32_camera_api import supports_cameras
     from esp32_contacts_api import supports_contacts
-    return {**CAPABILITIES, "editable_contacts": supports_contacts(state), **({"camera_slots": 2, "camera_setup": True} if supports_cameras(state) else {})}
+    return {**CAPABILITIES, "editable_contacts": supports_contacts(state),
+            "media": (state or {}).get('snapshot_protocol_version') == 1,
+            **({"camera_slots": 2, "camera_setup": True} if supports_cameras(state) else {})}
 
 
 def secret_hash(value):
@@ -146,6 +148,12 @@ def validate_state(state):
         raise ValueError("A valid reported arm_state is required")
     result = {"arm_state": state["arm_state"]}
     if state.get("status_protocol_version") == 2: result["status_protocol_version"]=2
+    if type(state.get('snapshot_protocol_version')) is int and state['snapshot_protocol_version'] == 1:
+        result['snapshot_protocol_version'] = 1
+        for key in ('snapshot_captured_count', 'snapshot_uploaded_count', 'snapshot_failed_count', 'snapshot_dropped_count'):
+            value = state.get(key)
+            if type(value) is int and 0 <= value <= 0xffffffff:
+                result[key] = value
     for key in ("force_armed", "siren_active", "camera_online", "camera_protection_active"):
         if type(state.get(key)) is not bool:
             raise ValueError(f"{key} must be boolean")
