@@ -287,6 +287,14 @@ def register_evidence_routes(app, auth_required, owned_shop_or_response):
             # Waiting ten minutes to reclaim it would lose the pre-event buffer.
             scoped = db.query(AlertEvidence).join(Alert, Alert.id == AlertEvidence.alert_id).filter(
                 AlertEvidence.serial == recorder.serial, Alert.shop_id == recorder.shop_id)
+            if payload.get('cloud_ingest_protocol_version') == 1:
+                # A newly connected cloud receiver cannot reconstruct incidents
+                # older than its bounded 180-second ring. Do not let never-started
+                # historical work starve current alerts; retain upload retries.
+                for stale in scoped.filter(AlertEvidence.status == 'pending', AlertEvidence.attempts == 0,
+                                           AlertEvidence.event_at < timestamp-timedelta(seconds=180)).all():
+                    stale.status, stale.reason = 'unavailable', 'buffer_missing'
+                db.flush()
             active_job = scoped.filter(AlertEvidence.status == 'capturing').filter(
                 AlertEvidence.lease_until > timestamp).order_by(AlertEvidence.event_at).first()
             jobs = [active_job] if active_job else scoped.filter(

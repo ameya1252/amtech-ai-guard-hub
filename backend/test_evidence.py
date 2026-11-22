@@ -149,6 +149,21 @@ class EvidenceTests(unittest.TestCase):
             self.assertIsNone(result.json['camera_1'])
             self.assertNotIn('private-camera-admin',result.text)
 
+    def test_cloud_reconnect_does_not_queue_lost_historical_video_ahead_of_current_incident(self):
+        old=self.event('before-cloud-recorder')
+        with SessionLocal() as db:
+            row=db.query(AlertEvidence).filter_by(alert_id=old).one()
+            row.event_at=datetime.now(timezone.utc)-timedelta(minutes=10);db.commit()
+        current=self.event('current-cloud-incident')
+        result=self.client.post('/evidence/recorder/poll',headers=self.recorder,
+            json={'cameras':[{'camera_id':1,'online':True}],'camera_config_protocol_version':2,'cloud_ingest_protocol_version':1})
+        self.assertEqual(result.status_code,200)
+        with SessionLocal() as db:
+            old_row=db.query(AlertEvidence).filter_by(alert_id=old).one()
+            self.assertEqual((old_row.status,old_row.reason),('unavailable','buffer_missing'))
+            claimed=db.get(AlertEvidence,result.json['jobs'][0]['id'])
+            self.assertEqual(claimed.alert_id,current)
+
     def test_completion_checks_storage_and_is_idempotent(self):
         alert=self.event();job=self.poll()[0];m=self.manifest()
         self.assertEqual(self.action(job,'prepare',manifest=m).status_code,200)
